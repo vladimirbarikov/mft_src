@@ -1,4 +1,5 @@
 # pylint: disable=too-many-lines
+# pylint: disable=line-too-long
 # pylint: disable=wrong-import-position
 """
 Authentication and Authorization Module for MFT APIs.
@@ -89,7 +90,7 @@ logger = get_logger(__name__)
 # ============================================================================
 
 # JWT Configuration
-SECRET_KEY = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
+FLASK_SECRET_KEY = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
 JWT_ALGORITHM = os.getenv('JWT_ALGORITHM', 'HS256')
 JWT_EXPIRATION_HOURS = int(os.getenv('JWT_EXPIRATION_HOURS', '8'))
 
@@ -175,7 +176,7 @@ def generate_token(
     if custom_claims:
         payload.update(custom_claims)
 
-    token = jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGORITHM)
+    token = jwt.encode(payload, FLASK_SECRET_KEY, algorithm=JWT_ALGORITHM)
     logger.debug("Generated token for user '%s' with roles %s", username, roles)
 
     return token
@@ -203,7 +204,7 @@ def decode_token(token: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[s
         if not token or not isinstance(token, str):
             return False, None, "Token is empty or invalid type"
 
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token, FLASK_SECRET_KEY, algorithms=[JWT_ALGORITHM])
 
         # Validate roles in payload
         roles = payload.get('roles', [])
@@ -552,7 +553,7 @@ __all__ = [
     # Constants
     'ROLES',
     'ROLE_HIERARCHY',
-    'SECRET_KEY',
+    'FLASK_SECRET_KEY',
     'JWT_ALGORITHM',
     'ADMIN_ROLE',
     'EDITOR_ROLE',
