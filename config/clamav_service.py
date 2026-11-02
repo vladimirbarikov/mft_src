@@ -1,4 +1,5 @@
 # pylint: disable=too-many-lines
+# pylint: disable=line-too-long
 # pylint: disable=wrong-import-position
 """
 Service for checking files via ClamAV antivirus before saving to Airflow data folder.
@@ -181,8 +182,8 @@ class ClamAVScanner:
             logger.error("Network error when connecting to ClamAV: %s", e)
             self.available = False
 
-        except Exception as e:
-            logger.error("Unexpected error when connecting to ClamAV: %s", e, exc_info=True)
+        except Exception as unexpected_error:
+            logger.error("Unexpected error when connecting to ClamAV: %s", unexpected_error, exc_info=True)
             self.available = False
 
     def _init_temp_directory(self) -> None:
@@ -228,10 +229,10 @@ class ClamAVScanner:
             logger.error("I/O error when creating a temporary directory: %s", e)
             self._fallback_temp_directory()
 
-        except Exception as e:
+        except Exception as unexpected_error:
             logger.error(
                 "Unexpected error when creating a temporary directory: %s",
-                e, exc_info=True
+                unexpected_error, exc_info=True
             )
             self._fallback_temp_directory()
 
@@ -295,8 +296,8 @@ class ClamAVScanner:
         except (PermissionError, OSError) as e:
             logger.error("Access error when clearing temporary files: %s", e)
             return 0
-        except Exception as e:
-            logger.error("Unexpected error when clearing temporary files: %s", e, exc_info=True)
+        except Exception as unexpected_error:
+            logger.error("Unexpected error when clearing temporary files: %s", unexpected_error, exc_info=True)
             return 0
 
     def _start_auto_cleanup(self, interval_hours: int = 6) -> None:
@@ -321,8 +322,8 @@ class ClamAVScanner:
                 except threading.ThreadError as e:
                     logger.error("Thread error in background cleaning: %s", e)
 
-                except Exception as e:
-                    logger.error("Unexpected error in background cleaning: %s", e, exc_info=True)
+                except Exception as unexpected_error:
+                    logger.error("Unexpected error in background cleaning: %s", unexpected_error, exc_info=True)
 
         try:
             self._cleanup_thread = threading.Thread(target=cleanup_worker, daemon=True)
@@ -413,9 +414,9 @@ class ClamAVScanner:
             logger.error("Not enough memory to scan %s: %s", filename, e)
             return False, "ERROR: Out of memory"
 
-        except Exception as e:
-            logger.error("Unexpected error during scanning %s: %s", filename, e, exc_info=True)
-            return False, f"ERROR: {str(e)}"
+        except Exception as unexpected_error:
+            logger.error("Unexpected error during scanning %s: %s", filename, unexpected_error, exc_info=True)
+            return False, f"ERROR: {str(unexpected_error)}"
 
     def manual_cleanup(self, max_age_hours: Optional[int] = None) -> int:
         """
@@ -568,9 +569,9 @@ except (
 
     clamav_scanner = DummyScanner()
 
-except Exception as e:
+except Exception as unexpected_error:
     # Unexpected errors - re-raise to let the application crash
-    logger.error("Unexpected error during ClamAVScanner initialization: %s", e, exc_info=True)
+    logger.error("Unexpected error during ClamAVScanner initialization: %s", unexpected_error, exc_info=True)
     raise
 
 def scan_stream(data: bytes, filename: str) -> Tuple[bool, Optional[str]]:

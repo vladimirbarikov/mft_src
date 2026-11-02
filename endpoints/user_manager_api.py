@@ -1,4 +1,5 @@
 # pylint: disable=too-many-lines
+# pylint: disable=line-too-long
 # pylint: disable=wrong-import-position
 """
 Flask API for Database User Management.

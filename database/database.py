@@ -1,4 +1,5 @@
 # pylint: disable=too-many-lines
+# pylint: disable=line-too-long
 # pylint: disable=wrong-import-position
 """
 Database Models Module for Material Flow Table Database with SQLAlchemy ORM.

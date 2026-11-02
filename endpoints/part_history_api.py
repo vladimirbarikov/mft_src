@@ -1,4 +1,5 @@
 # pylint: disable=too-many-lines
+# pylint: disable=line-too-long
 # pylint: disable=wrong-import-position
 """
 Part History API Module for Material Flow Table Database.

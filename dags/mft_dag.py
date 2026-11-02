@@ -1,4 +1,5 @@
 # pylint: disable=too-many-lines
+# pylint: disable=line-too-long
 # pylint: disable=wrong-import-position
 """
 Orchestrating ETL Pipeline DAG for Material Flow Table Database.
@@ -104,36 +105,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # Local imports
 from config import get_logger
-# from config.columns_config import (
-#     # CORE ENTITY TABLES COLUMNS
-#     SUPPLIER_COLS, PART_COLS, BOX_COLS, PALLET_COLS,
-#     MODEL_COLS, CONFIGURATION_COLS, WORKSHOP_COLS, LINE_COLS,
-#     # JUNCTION TABLES COLUMNS
-#     PART_TO_BOX_COMPOSITE_COLS, BOX_TO_PALLET_COMPOSITE_COLS,
-#     PART_TO_MODEL_COLS, PART_TO_LINE_COLS
-# )
-
-# from dags.tasks.serializer import (
-#     serialize_df,
-#     deserialize_df
-# )
-# from dags.tasks.extractor import (
-#     create_main_df,
-#     create_specialized_df
-# )
-# from dags.tasks.transformer import (
-#     columns_to_lowercase,
-#     convert_to_int64,
-#     convert_to_string,
-#     convert_to_float,
-#     basic_clean_text,
-#     advanced_clean_text,
-#     pinyin_conversion
-# )
-# from dags.tasks.mft_loader import (
-#     load_core_entity_tables,
-#     load_junction_tables
-# )
 
 # Logger setup
 logger = get_logger(__name__)
@@ -668,7 +639,7 @@ def mft_etl_pipeline():
         return serialized_raw_line_df_b64
 
 
-    # Extract data for junction tables (many-to-many relationships)
+    # Extract data for junction tables
     @task(task_id="extract_part_to_box")
     def extract_part_to_box(serialized_main_df_b64: str) -> str:
         """Extract Part-to-Box junction data"""

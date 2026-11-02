@@ -1,3 +1,6 @@
+# pylint: disable=too-many-lines
+# pylint: disable=line-too-long
+# pylint: disable=wrong-import-position
 """
 Logging configuration module for MFT Database project.
 Optimized for containerized deployment with Grafana Loki.
