@@ -1,4 +1,5 @@
 # pylint: disable=too-many-lines
+# pylint: disable=line-too-long
 # pylint: disable=wrong-import-position
 """
 Data Transformation Module for Material Flow Table Database.
@@ -685,5 +686,127 @@ def pinyin_conversion(df: pl.DataFrame, col: str) -> pl.DataFrame:
         )
         # Return original DataFrame without changes
         return df
+
+    return df
+
+
+def parse_dimensions(df: pl.DataFrame, source_col: str, prefix: str) -> pl.DataFrame:
+    """
+    Parse dimension string "LENGTHxWIDTHxHEIGHT" into separate columns.
+    
+    Performs the following operations:
+        1. Validates source column exists
+        2. Extracts three dimension values using regex pattern
+        3. Creates new columns with prefix and suffix _LENGTH_MM, _WIDTH_MM, _HEIGHT_MM
+        4. Converts extracted values to Int64
+        5. Drops the source column
+        6. Logs warnings for invalid formats
+    
+    Supports dimensions from 1 to 4 digits (e.g., "1550X10X5" or "550X380X230").
+    Handles both uppercase 'X' and lowercase 'x' separators.
+    
+    Args:
+        df: Input Polars DataFrame
+        source_col: Source column name containing dimension string (e.g., 'BOX_BEFORE')
+        prefix: Column prefix for output columns (e.g., 'BOX' -> 'BOX_LENGTH_MM')
+        
+    Returns:
+        DataFrame with parsed dimension columns added and source column removed
+        
+    Examples:
+        >>> import polars as pl
+        >>> df = pl.DataFrame({
+        ...     "BOX_BEFORE": ["550X380X230", "1550X10X5", "1200x800x600", None]
+        ... })
+        >>> parse_dimensions(df, "BOX_BEFORE", "BOX")
+        shape: (4, 3)
+        ┌───────────────┬──────────────┬──────────────┐
+        │ BOX_LENGTH_MM ┆ BOX_WIDTH_MM ┆ BOX_HEIGHT_MM│
+        │ ---           ┆ ---          ┆ ---          │
+        │ i64           ┆ i64          ┆ i64          │
+        ╞═══════════════╪══════════════╪══════════════╡
+        │ 550           ┆ 380          ┆ 230          │
+        │ 1550          ┆ 10           ┆ 5            │
+        │ 1200          ┆ 800          ┆ 600          │
+        │ null          ┆ null         ┆ null         │
+        └───────────────┴──────────────┴──────────────┘
+        
+    Notes:
+        - Valid format: exactly three numbers separated by 'X' or 'x'
+        - Each number must be 1-4 digits
+        - Invalid formats and null values result in null values in all three columns
+        - The source column is always removed (even if parsing fails)
+        - Pattern: r'^(\\d{1,4})[Xx](\\d{1,4})[Xx](\\d{1,4})$'
+    """
+    # Define column names
+    length_col = f"{prefix}_LENGTH_MM"
+    width_col = f"{prefix}_WIDTH_MM"
+    height_col = f"{prefix}_HEIGHT_MM"
+
+    # Check if source column exists
+    if source_col not in df.columns:
+        logger.warning("Column '%s' not found in DataFrame", source_col)
+        return df
+
+    # Case-insensitive pattern: 'X' or 'x'
+    pattern = r'^(\d{1,4})[Xx](\d{1,4})[Xx](\d{1,4})$'
+
+    # Check for invalid formats and log them
+    invalid_mask = (
+        pl.col(source_col).is_not_null() &
+        ~pl.col(source_col).str.contains(pattern)
+    )
+    invalid_count = df.filter(invalid_mask).height
+
+    if invalid_count > 0:
+        invalid_samples = (
+            df.filter(invalid_mask)
+            .select(source_col)
+            .head(5)
+            .to_series()
+            .to_list()
+        )
+        logger.warning(
+            "Found %d invalid dimension format(s) in column '%s'. "
+            "Expected format: 'LENGTHxWIDTHxHEIGHT' (e.g., '550X380X230'). "
+            "Samples: %s",
+            invalid_count, source_col, invalid_samples
+        )
+
+    # Extract dimensions using regex pattern
+    df = df.with_columns([
+        # Extract length (first group)
+        pl.col(source_col)
+        .str.extract(pattern, 1)
+        .cast(pl.Int64, strict=False)
+        .alias(length_col),
+
+        # Extract width (second group)
+        pl.col(source_col)
+        .str.extract(pattern, 2)
+        .cast(pl.Int64, strict=False)
+        .alias(width_col),
+
+        # Extract height (third group)
+        pl.col(source_col)
+        .str.extract(pattern, 3)
+        .cast(pl.Int64, strict=False)
+        .alias(height_col),
+    ])
+
+    # Drop source column
+    df = df.drop(source_col)
+
+    # Log statistics
+    valid_count = df.filter(
+        pl.col(length_col).is_not_null() &
+        pl.col(width_col).is_not_null() &
+        pl.col(height_col).is_not_null()
+    ).height
+
+    logger.info(
+        "Successfully parsed %d dimension(s) from column '%s' into: %s, %s, %s",
+        valid_count, source_col, length_col, width_col, height_col
+    )
 
     return df
