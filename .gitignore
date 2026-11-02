@@ -42,3 +42,6 @@ uploads/
 backups/
 processed/
 quarantine/
+
+# Ignoring the Git commit files in root
+/commit_msg.txt
