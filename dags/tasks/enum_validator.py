@@ -27,7 +27,7 @@ Configuration Source:
     This module imports ENUM types directly from database.py:
         - LOCALIZATION_ENUM: Supplier localization status (yes/no/no data)
         - PACKAGING_TYPE_ENUM: Returnable/non-returnable packaging
-        - MODEL_CODES_ENUM: Vehicle platform codes (a01, a08, b02, etc.)
+        - BOM_PRODUCT_ENUM: Vehicle platform codes ('a01g-r-bom', 'a08-r-bom', 'b02-r-bom', etc.)
         - MODEL_NAMES_ENUM: Vehicle marketing names (jolion, h3, f7, etc.)
         - WORKSHOP_CODES_ENUM: Production workshop codes (as, comp, paint, etc.)
         - WORKSHOP_NAMES_ENUM: Full workshop names (assembly, component, etc.)
@@ -123,7 +123,7 @@ from config import get_logger
 from database.database import (
     LOCALIZATION_ENUM,
     PACKAGING_TYPE_ENUM,
-    MODEL_CODES_ENUM,
+    BOM_PRODUCT_ENUM,
     MODEL_NAMES_ENUM,
     WORKSHOP_CODES_ENUM,
     WORKSHOP_NAMES_ENUM,
@@ -160,11 +160,9 @@ _COLUMN_TO_ENUM = {
     'pallet_after': PACKAGING_TYPE_ENUM,
     'PALLET_AFTER': PACKAGING_TYPE_ENUM,
 
-    # MODEL_CODES_ENUM mappings
-    'MODEL_CODE': MODEL_CODES_ENUM,
-    'model_code': MODEL_CODES_ENUM,
-    'bom_product': MODEL_CODES_ENUM,
-    'BOM_PRODUCT': MODEL_CODES_ENUM,
+    # BOM_PRODUCT_ENUM mappings
+    'bom_product': BOM_PRODUCT_ENUM,
+    'BOM_PRODUCT': BOM_PRODUCT_ENUM,
 
     # MODEL_NAMES_ENUM mappings
     'MODEL_NAME': MODEL_NAMES_ENUM,

@@ -5,6 +5,7 @@
 # pyright: reportOptionalIterable=false
 
 # pylint: disable=too-many-lines
+# pylint: disable=line-too-long
 # pylint: disable=wrong-import-position
 """
 Database connection and management module for Material Flow Table Database with SQLAlchemy.
