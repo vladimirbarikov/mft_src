@@ -308,6 +308,11 @@ BREAKPOINT_STATUS_ENUM = SqlEnum(
     name='breakpoint_status'
 )
 
+FLOW_DIRECTION_ENUM = SqlEnum(
+    'in', 'out',
+    name='flow_direction'
+)
+
 # ========== CORE ENTITY TABLES ==========
 class SupplierData(Base):
     '''
@@ -348,6 +353,12 @@ class SupplierData(Base):
             - Coordinates optional; when present, validated to valid Earth ranges
             - Coordinates used for logistics route optimization and map display
             - Numeric(9,6) gives ~11 cm precision — sufficient for logistics
+            ---
+            AUDIT:
+            - created_at: When the record was created
+            - updated_at: When the record was last updated
+            - created_by_user_id: User who created the record
+            - updated_by_user_id: User who last updated the record
             """
         },
     )
@@ -391,12 +402,47 @@ class SupplierData(Base):
         LOCALIZATION_ENUM,
         nullable=False
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
-    parts = relationship('PartData', back_populates='supplier', lazy='selectin')
+    parts = relationship(
+        'PartData',
+        back_populates='supplier',
+        lazy='selectin'
+    )
     breakpoint_changes = relationship(
         'PartToBreakpoint',
         foreign_keys='PartToBreakpoint.supplier_id',
         back_populates='supplier',
+        lazy='select'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
         lazy='select'
     )
 
@@ -426,7 +472,6 @@ class PartData(Base):
               (deactivated_at is computed from breakpoint_date)
             - original_part_id: First version of this part (for grouping versions)
             - version_number: Version number (1, 2, 3, ...)
-            - created_at: When this version was created
             ---
             RELATIONSHIPS:
             - Many-to-Many with: ModelData, LineData, BoxData, BreakpointData
@@ -440,6 +485,12 @@ class PartData(Base):
             - Historical data in part_to_breakpoint remains valid
             - deactivated_at is ALWAYS derived from breakpoint_date
             - Single source of truth: breakpoint_data.breakpoint_date
+            ---
+            AUDIT:
+            - created_at: When the record was created
+            - updated_at: When the record was last updated
+            - created_by_user_id: User who created the record
+            - updated_by_user_id: User who last updated the record
             """
         },
     )
@@ -488,10 +539,26 @@ class PartData(Base):
         default=1,
         comment="Version number (starts at 1 for original)"
     )
+    # Audit fields
     created_at = Column(
         DateTime,
         server_default=func.now(),
         nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
     )
     # Relationships
     supplier = relationship(
@@ -546,6 +613,16 @@ class PartData(Base):
         remote_side=[part_id],
         foreign_keys=[original_part_id],
         lazy='joined'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select'
     )
     # Properties
     @property
@@ -661,6 +738,12 @@ class BoxData(Base):
             - Dimensions in 5mm increments
             - Volume/area auto-calculated on insert/update
             - Box number auto-generated from type and dimensions
+            ---
+            AUDIT:
+            - created_at: When the record was created
+            - updated_at: When the record was last updated
+            - created_by_user_id: User who created the record
+            - updated_by_user_id: User who last updated the record
             """
         },
     )
@@ -758,6 +841,27 @@ class BoxData(Base):
         CheckConstraint('box_stacking >= 0'),
         nullable=True
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     parts = relationship(
         'PartToBox',
@@ -767,6 +871,16 @@ class BoxData(Base):
     pallets = relationship(
         'BoxToPallet',
         back_populates='box',
+        lazy='select'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
         lazy='select'
     )
 
@@ -805,6 +919,12 @@ class PalletData(Base):
             - Dimensions in 10mm increments
             - Volume/area auto-calculated on insert/update
             - Pallet number auto-generated from type and dimensions
+            ---
+            AUDIT:
+            - created_at: When the record was created
+            - updated_at: When the record was last updated
+            - created_by_user_id: User who created the record
+            - updated_by_user_id: User who last updated the record
             """
         },
     )
@@ -902,10 +1022,41 @@ class PalletData(Base):
         CheckConstraint('pallet_stacking >= 0'),
         nullable=True
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     boxes = relationship(
         'BoxToPallet',
         back_populates='pallet',
+        lazy='select'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
         lazy='select'
     )
 
@@ -933,6 +1084,12 @@ class ModelData(Base):
             BUSINESS RULES:
             - Model codes follow platform-generation-variant pattern
             - Used for BOM (Bill of Materials) configuration
+            ---
+            AUDIT:
+            - created_at: When the record was created
+            - updated_at: When the record was last updated
+            - created_by_user_id: User who created the record
+            - updated_by_user_id: User who last updated the record
             """
         },
     )
@@ -958,6 +1115,27 @@ class ModelData(Base):
         unique=True,
         nullable=False
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     parts = relationship(
         'PartToModel',
@@ -973,6 +1151,16 @@ class ModelData(Base):
     production_plans = relationship(
         'ProductionPlanData',
         back_populates='model',
+        lazy='select'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
         lazy='select'
     )
 
@@ -1007,6 +1195,12 @@ class ConfigurationData(Base):
               defined in configuration_to_transmission (M:N).
             - The actual combination used by a specific batch is stored in
               ProductionPlanData (configuration_id + transmission_id)
+            ---
+            AUDIT:
+            - created_at: When the record was created
+            - updated_at: When the record was last updated
+            - created_by_user_id: User who created the record
+            - updated_by_user_id: User who last updated the record
             """
         },
     )
@@ -1022,6 +1216,27 @@ class ConfigurationData(Base):
         unique=True,
         nullable=False
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     part_models = relationship(
         'PartToModel',
@@ -1036,6 +1251,16 @@ class ConfigurationData(Base):
     production_plans = relationship(
         'ProductionPlanData',
         back_populates='configuration',
+        lazy='select'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
         lazy='select'
     )
 
@@ -1071,6 +1296,12 @@ class EngineData(Base):
             - Engine is an INDEPENDENT dimension of a vehicle:
               the same engine can be installed on different models,
               configurations and drivetrains
+            ---
+            AUDIT:
+            - created_at: When the record was created
+            - updated_at: When the record was last updated
+            - created_by_user_id: User who created the record
+            - updated_by_user_id: User who last updated the record
             """
         },
     )
@@ -1118,10 +1349,41 @@ class EngineData(Base):
         default=True,
         server_default=text('true')
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     production_plans = relationship(
         'ProductionPlanData',
         back_populates='engine',
+        lazy='select'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
         lazy='select'
     )
 
@@ -1157,6 +1419,12 @@ class TransmissionData(Base):
               attribute of ConfigurationData. Combinations premium+4x4 and
               premium+4x2 are distinct vehicles with potentially different BOMs.
             - Allowed combinations are managed in configuration_to_transmission
+            ---
+            AUDIT:
+            - created_at: When the record was created
+            - updated_at: When the record was last updated
+            - created_by_user_id: User who created the record
+            - updated_by_user_id: User who last updated the record
             """
         },
     )
@@ -1183,6 +1451,27 @@ class TransmissionData(Base):
         default=True,
         server_default=text('true')
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     allowed_configurations = relationship(
         'ConfigurationToTransmission',
@@ -1192,6 +1481,16 @@ class TransmissionData(Base):
     production_plans = relationship(
         'ProductionPlanData',
         back_populates='transmission',
+        lazy='select'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
         lazy='select'
     )
 
@@ -1219,6 +1518,12 @@ class WorkshopData(Base):
             BUSINESS RULES:
             - Workshops represent manufacturing process steps
             - Codes follow production flow sequence
+            ---
+            AUDIT:
+            - created_at: When the record was created
+            - updated_at: When the record was last updated
+            - created_by_user_id: User who created the record
+            - updated_by_user_id: User who last updated the record
             """
         },
     )
@@ -1239,6 +1544,27 @@ class WorkshopData(Base):
         unique=True,
         nullable=False
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     lines = relationship(
         'LineData',
@@ -1248,6 +1574,16 @@ class WorkshopData(Base):
     production_plans = relationship(
         'ProductionPlanData',
         back_populates='workshop',
+        lazy='select'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
         lazy='select'
     )
 
@@ -1278,6 +1614,12 @@ class LineData(Base):
             BUSINESS RULES:
             - Each line belongs to exactly one workshop
             - Parts are assigned to specific installation lines
+            ---
+            AUDIT:
+            - created_at: When the record was created
+            - updated_at: When the record was last updated
+            - created_by_user_id: User who created the record
+            - updated_by_user_id: User who last updated the record
             """
         },
     )
@@ -1303,6 +1645,27 @@ class LineData(Base):
         nullable=False,
         comment="The production workshop cannot be deleted if there are lines!"
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     workshop = relationship(
         'WorkshopData',
@@ -1320,6 +1683,16 @@ class LineData(Base):
         back_populates='line',
         lazy='select'
     )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select'
+    )
 
 
 class BreakpointData(Base):
@@ -1330,7 +1703,7 @@ class BreakpointData(Base):
     __table_args__ = (
         Index('idx_breakpoint_number', 'breakpoint_number'),
         Index('idx_breakpoint_date', 'breakpoint_date'),
-        Index('idx_input_date', 'input_date'),
+        Index('idx_breakpoint_created_at', 'created_at'),
         Index('idx_breakpoint_batch_plan', 'batch_plan'),
         Index('idx_breakpoint_batch_fact', 'batch_fact'),
         Index('idx_breakpoint_domain', 'change_domain'),
@@ -1342,7 +1715,6 @@ class BreakpointData(Base):
             ---
             COLUMN DESCRIPTION:
             - breakpoint_id: Unique system identifier (BPT_ + 36-character UUID)
-            - input_date: When record was created
             - breakpoint_number: Engineering change identifier (BP-* or MAN-*)
             - breakpoint_status: Execution status of breakpoint
             - breakpoint_date: When change takes effect
@@ -1352,6 +1724,12 @@ class BreakpointData(Base):
             - solution: Solution description (from Excel)
             - change_domain: WHAT changed (supplier, packaging, production, spec, config, multi)
             - change_nature: WHY it changed (business, technical, correction)
+            ---
+            AUDIT:
+            - created_at: When the record was created
+            - updated_at: When the record was last updated
+            - created_by_user_id: User who created the record
+            - updated_by_user_id: User who last updated the record
             ---
             CLASSIFICATION:
             - Domain: supplier | packaging | production | spec | config | multi
@@ -1367,6 +1745,7 @@ class BreakpointData(Base):
             - idx_breakpoint_domain: For domain filtering
             - idx_breakpoint_nature: For nature filtering
             - idx_breakpoint_domain_nature: For combined filtering
+            - idx_breakpoint_created_at: For creation-date range queries
             """
         },
     )
@@ -1375,11 +1754,6 @@ class BreakpointData(Base):
         primary_key=True,
         server_default=text("'BPT_' || gen_random_uuid()::text"),
         unique=True,
-        nullable=False
-    )
-    input_date = Column(
-        DateTime(),
-        server_default=func.now(),
         nullable=False
     )
     breakpoint_number = Column(
@@ -1421,6 +1795,27 @@ class BreakpointData(Base):
         nullable=True,
         comment="Nature: business, technical, correction"
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     part_transitions = relationship(
         'PartToBreakpoint',
@@ -1437,6 +1832,16 @@ class BreakpointData(Base):
         'PartToModel',
         foreign_keys='PartToModel.deactivated_by_breakpoint_id',
         back_populates='deactivation_breakpoint',
+        lazy='select'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
         lazy='select'
     )
 
@@ -1460,7 +1865,6 @@ class DepartmentData(Base):
             - department_name: Full department name
             - description: Optional notes
             - is_active: Soft-disable flag
-            - created_at: Record creation timestamp
             ---
             RELATIONSHIPS:
             - One department has many users (1:N with UserData)
@@ -1498,11 +1902,6 @@ class DepartmentData(Base):
         nullable=False,
         default=True,
         server_default=text('true')
-    )
-    created_at = Column(
-        DateTime,
-        server_default=func.now(),
-        nullable=False
     )
     # Relationships
     users = relationship(
@@ -1619,8 +2018,12 @@ class UserData(Base):
             - department_id: Optional department affiliation
             - is_active: Soft-disable flag (failed login, offboarding)
             - last_login_at: Last successful authentication timestamp
-            - created_at: Account creation timestamp
-            - updated_at: Last profile update timestamp
+            ---
+            AUDIT:
+            - created_at: When the record was created
+            - updated_at: When the record was last updated
+            - created_by_user_id: User who created the record
+            - updated_by_user_id: User who last updated the record
             ---
             RELATIONSHIPS:
             - Many-to-One with: UserRoleData, DepartmentData
@@ -1685,6 +2088,7 @@ class UserData(Base):
         DateTime,
         nullable=True
     )
+    # Audit fields
     created_at = Column(
         DateTime,
         server_default=func.now(),
@@ -1694,6 +2098,16 @@ class UserData(Base):
         DateTime,
         nullable=True,
         onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
     )
     # Relationships
     role = relationship(
@@ -1709,6 +2123,7 @@ class UserData(Base):
     created_plans = relationship(
         'ProductionPlanData',
         back_populates='created_by',
+        foreign_keys='ProductionPlanData.created_by_user_id',
         lazy='select'
     )
 
@@ -1718,11 +2133,16 @@ class ProductionPlanData(Base):
     '''
     Model defines a table for storing production plan records.
 
-    Each record represents ONE LINE of the planning Excel: a concrete
-    (workshop, model, configuration, engine, transmission, quantity, date)
-    tuple. The same batch may appear in MULTIPLE records - e.g. when part
-    of the batch is carried over to another day, or when the same batch is
-    produced in several workshops.
+    Each record represents ONE LINE of the planning Excel for a concrete
+    workshop and flow direction (in / out). The same batch may appear in
+    MULTIPLE records - e.g. when part of the batch is carried over to
+    another day, or when the same batch is produced in several workshops.
+
+    VERSIONING:
+    - All versions of one logical plan line share the same plan_group_id.
+    - Exactly one version per group has is_current = TRUE
+      (enforced by partial unique index).
+    - superseded_by_plan_id points to the version that replaced this one.
     '''
     __tablename__ = 'production_plan_data'
     __table_args__ = (
@@ -1735,49 +2155,74 @@ class ProductionPlanData(Base):
         Index('idx_plan_engine_id', 'engine_id'),
         Index('idx_plan_transmission_id', 'transmission_id'),
         Index('idx_plan_created_by', 'created_by_user_id'),
+        Index('idx_plan_updated_by', 'updated_by_user_id'),
         Index('idx_plan_model_date', 'model_id', 'batch_date'),
+        # Versioning indexes
+        Index('idx_plan_group_id', 'plan_group_id'),
+        Index('idx_plan_is_current', 'is_current'),
+        Index('idx_plan_superseded_by', 'superseded_by_plan_id'),
+        Index('idx_plan_flow_direction', 'flow_direction'),
+        Index(
+            'idx_plan_workshop_flow_date',
+            'workshop_id', 'flow_direction', 'batch_date'
+        ),
+        # Partial unique index: exactly one current version per group
+        Index(
+            'uq_plan_current_per_group',
+            'plan_group_id',
+            unique=True,
+            postgresql_where=text('is_current = TRUE')
+        ),
         CheckConstraint('quantity >= 0', name='chk_plan_quantity'),
+        CheckConstraint('version_number >= 1', name='chk_plan_version_number'),
         {
             'comment': """
-            PURPOSE: Production plan records (one row per Excel line)
+            PURPOSE: Production plan records (one row per Excel line per flow direction)
             ---
             COLUMN DESCRIPTION:
             - plan_id: Unique system identifier (PLN_ + 36-character UUID)
-            - batch: Batch identifier from Excel (e.g. RAR2628). NOT unique:
-              the same batch may be split across days/workshops.
+            - batch: Batch identifier from Excel (e.g. RAR2628). NOT unique.
             - batch_date: Date of this plan record (from Excel)
             - workshop_id: Workshop where the batch is produced
+            - flow_direction: 'in' or 'out' - which workshop flow this line belongs to
             - model_id: Vehicle model (includes bom_product + model_code)
             - configuration_id: Vehicle configuration (comfort, elite, ...)
-            - engine_id: Engine used in the batch (references engine_data)
-            - transmission_id: Transmission used in the batch (references transmission_data)
+            - engine_id: Engine used in the batch
+            - transmission_id: Transmission used in the batch
             - quantity: Planned quantity for this record
             - comments: Free-text comment from the Excel row
-            - created_by_user_id: Who created the plan (audit)
-            - created_at / updated_at: Audit timestamps
+            ---
+            AUDIT:
+            - created_at: When the record was created
+            - updated_at: When the record was last updated
+            - created_by_user_id: User who created the record
+            - updated_by_user_id: User who last updated the record
+            ---
+            VERSIONING COLUMNS:
+            - plan_group_id: UUID grouping all versions of one logical line
+            - version_number: 1, 2, 3, ... within the group
+            - is_current: TRUE for the actual version (one per group)
+            - superseded_by_plan_id: Version that replaced this one (NULL if current)
+            - superseded_reason: Why this version was replaced
             ---
             RELATIONSHIPS:
             - Many-to-One with: WorkshopData, ModelData, ConfigurationData,
               EngineData, TransmissionData, UserData
             - One-to-Many with: ProductionPlanDayData (daily breakdown)
+            - Self-referencing: superseded_by / supersedes
             ---
             BUSINESS RULES:
             - One Excel line = one ProductionPlanData record
-            - batch is NOT unique: the same batch may appear in several
-              records (carry-over to another day, partial production,
-              production in several workshops)
-            - (batch, batch_date) is also NOT unique: multiple records for
-              the same batch on the same date are allowed
-            - Duplicates from re-imported Excel are handled by the
-              application layer, not by a UNIQUE constraint
+            - Each record belongs to one (workshop, flow_direction) pair
+            - batch is NOT unique: the same batch may appear in several records
+            - (batch, batch_date) is also NOT unique
+            - Exactly one is_current = TRUE per plan_group_id (DB-enforced)
+            - When a plan changes, the old version gets is_current = FALSE
+              and superseded_by_plan_id pointing to the new version
             - Total planned quantity per record must equal
               SUM(ProductionPlanDayData.planned_quantity) - enforced in app layer
-            - engine and transmission are independent dimensions: any
-              combination of (model, configuration, engine, transmission)
-              is allowed at the DB level. The application may warn about
-              "new" combinations based on historical ProductionPlanData.
-            - configuration_to_transmission is a SOFT reference table:
-              it is NOT enforced by FK from ProductionPlanData
+            - engine and transmission are independent dimensions
+            - configuration_to_transmission is a SOFT reference table
             - Plans are never physically deleted without their day rows
               (CASCADE on ProductionPlanDayData)
             """
@@ -1805,6 +2250,11 @@ class ProductionPlanData(Base):
         ForeignKey('workshop_data.workshop_id', ondelete='RESTRICT'),
         nullable=False,
         comment="Workshop where the batch is produced"
+    )
+    flow_direction = Column(
+        FLOW_DIRECTION_ENUM,
+        nullable=False,
+        comment="Workshop flow direction: 'in' or 'out'"
     )
     model_id = Column(
         String(40),
@@ -1839,11 +2289,50 @@ class ProductionPlanData(Base):
         Text,
         nullable=True
     )
+    # Versioning fields
+    plan_group_id = Column(
+        String(36),
+        nullable=False,
+        server_default=text('gen_random_uuid()::text'),
+        comment="UUID grouping all versions of one logical plan line"
+    )
+    version_number = Column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=text('1'),
+        comment="Version number within the group (1, 2, 3, ...)"
+    )
+    is_current = Column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text('true'),
+        comment="TRUE for the actual version of the group"
+    )
+    superseded_by_plan_id = Column(
+        String(40),
+        ForeignKey('production_plan_data.plan_id', ondelete='SET NULL'),
+        nullable=True,
+        comment="Version that replaced this one (NULL if current)"
+    )
+    superseded_reason = Column(
+        Text,
+        nullable=True,
+        comment="Why this version was replaced (not produced, replaced, etc.)"
+    )
+    # Audit fields
     created_by_user_id = Column(
         String(40),
         ForeignKey('user_data.user_id', ondelete='SET NULL'),
         nullable=True,
         comment="User who created the plan (audit)"
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True,
+        comment="User who last updated the plan (audit)"
     )
     created_at = Column(
         DateTime,
@@ -1884,13 +2373,33 @@ class ProductionPlanData(Base):
     created_by = relationship(
         'UserData',
         back_populates='created_plans',
+        foreign_keys=[created_by_user_id],
         lazy='joined'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select'
     )
     days = relationship(
         'ProductionPlanDayData',
         back_populates='plan',
         lazy='selectin',
         cascade='all, delete-orphan'
+    )
+    # Self-referencing versioning relationships
+    superseded_by = relationship(
+        'ProductionPlanData',
+        remote_side=[plan_id],
+        foreign_keys=[superseded_by_plan_id],
+        lazy='joined',
+        back_populates='supersedes'
+    )
+    supersedes = relationship(
+        'ProductionPlanData',
+        foreign_keys=[superseded_by_plan_id],
+        lazy='select',
+        back_populates='superseded_by'
     )
     # Properties
     @property
@@ -1910,6 +2419,11 @@ class ProductionPlanData(Base):
         """Record quantity matches sum of daily planned quantities."""
         return self.total_planned_quantity == self.quantity
 
+    @property
+    def is_latest_version(self):
+        """Alias for is_current for readability."""
+        return self.is_current
+
 
 class ProductionPlanDayData(Base):
     '''
@@ -1924,6 +2438,8 @@ class ProductionPlanDayData(Base):
         Index('idx_plan_day_plan_id', 'plan_id'),
         Index('idx_plan_day_plan_date', 'plan_date'),
         Index('idx_plan_day_date_plan', 'plan_date', 'plan_id'),
+        Index('idx_plan_day_created_by', 'created_by_user_id'),
+        Index('idx_plan_day_updated_by', 'updated_by_user_id'),
         CheckConstraint('planned_quantity >= 0', name='chk_plan_day_planned'),
         CheckConstraint(
             'actual_quantity IS NULL OR actual_quantity >= 0',
@@ -1949,6 +2465,12 @@ class ProductionPlanDayData(Base):
               ProductionPlanData.quantity (checked in application layer)
             - actual_quantity is optional and filled after production
             - Rows are deleted automatically when the parent record is deleted
+            ---
+            AUDIT:
+            - created_at: When the record was created
+            - updated_at: When the record was last updated
+            - created_by_user_id: User who created the record
+            - updated_by_user_id: User who last updated the record
             """
         },
     )
@@ -1978,12 +2500,93 @@ class ProductionPlanDayData(Base):
         nullable=True,
         comment="Actual quantity for this date (filled after production)"
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     plan = relationship(
         'ProductionPlanData',
         back_populates='days'
     )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select'
+    )
 
+
+# ========== AUDIT LOG TABLES ==========
+class AuditLogData(Base):
+    '''
+    Stores full history of changes (who, when, table, record, field, old, new).
+    '''
+    __tablename__ = 'audit_log_data'
+    __table_args__ = (
+        Index('idx_audit_table_record', 'table_name', 'record_id'),
+        Index('idx_audit_created_at', 'created_at'),
+        Index('idx_audit_user', 'user_id'),
+        {
+            'comment': """
+            PURPOSE: Full audit trail for all audited tables.
+            COLUMN DESCRIPTION:
+            - audit_id: Unique identifier (AUD_ + UUID)
+            - table_name: Name of the modified table
+            - record_id: Primary key of the modified record (as string)
+            - field_name: Name of the modified column
+            - old_value: Previous value (as text)
+            - new_value: New value (as text)
+            - action: INSERT, UPDATE, or DELETE
+            - user_id: Who made the change
+            - created_at: When the change happened
+            """
+        },
+    )
+    audit_id = Column(
+        String(40),
+        primary_key=True,
+        server_default=text("'AUD_' || gen_random_uuid()::text"),
+        unique=True,
+        nullable=False
+    )
+    table_name = Column(String(100), nullable=False)
+    record_id = Column(String(40), nullable=False)
+    field_name = Column(String(100), nullable=False)
+    old_value = Column(Text, nullable=True)
+    new_value = Column(Text, nullable=True)
+    action = Column(String(10), nullable=False) # INSERT, UPDATE, DELETE
+    user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
 
 # ========== JUNCTION TABLES ==========
 class PartToBox(Base):
