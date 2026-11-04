@@ -283,7 +283,7 @@ SELECT
     bd.change_domain,
     bd.change_nature,
     bd.description,
-    bd.input_date,
+    bd.created_at,
     
     -- Count of parts affected
     COUNT(DISTINCT ptb.new_part_id) AS new_parts_count,
@@ -317,7 +317,7 @@ GROUP BY
     bd.change_domain,
     bd.change_nature,
     bd.description,
-    bd.input_date
+    bd.created_at
 
 ORDER BY bd.breakpoint_date DESC;
 """
@@ -393,7 +393,7 @@ SELECT
     bd.solution,
     bd.batch_plan,
     bd.batch_fact,
-    bd.input_date,
+    bd.created_at,
     
     CASE 
         WHEN bd.breakpoint_number LIKE 'MAN-%' THEN 'manual'
@@ -427,7 +427,7 @@ GROUP BY
     bd.solution,
     bd.batch_plan,
     bd.batch_fact,
-    bd.input_date
+    bd.created_at
 
 ORDER BY bd.breakpoint_date DESC;
 """
@@ -667,7 +667,7 @@ class BreakpointSummaryView(Base):
     change_domain = Column(String(20))
     change_nature = Column(String(20))
     description = Column(Text)
-    input_date = Column(DateTime)
+    created_at = Column(DateTime)
 
     new_parts_count = Column(Integer)
     old_parts_count = Column(Integer)
@@ -733,7 +733,7 @@ class BreakpointDetailsView(Base):
     solution = Column(Text)
     batch_plan = Column(String(10))
     batch_fact = Column(String(10))
-    input_date = Column(DateTime)
+    created_at = Column(DateTime)
 
     source = Column(String(20))
 

@@ -932,11 +932,11 @@ mft_parts_per_breakpoint_min:
 mft_breakpoint_lag_avg_days:
   query: |
     SELECT COALESCE(
-      AVG(EXTRACT(EPOCH FROM (breakpoint_date - input_date)) / 86400), 
+      AVG(EXTRACT(EPOCH FROM (breakpoint_date - created_at)) / 86400), 
       0
     ) AS avg
     FROM breakpoint_data
-    WHERE breakpoint_date IS NOT NULL AND input_date IS NOT NULL
+    WHERE breakpoint_date IS NOT NULL AND created_at IS NOT NULL
   master: true
   metrics:
     - avg:
@@ -946,11 +946,11 @@ mft_breakpoint_lag_avg_days:
 mft_breakpoint_lag_max_days:
   query: |
     SELECT COALESCE(
-      MAX(EXTRACT(EPOCH FROM (breakpoint_date - input_date)) / 86400), 
+      MAX(EXTRACT(EPOCH FROM (breakpoint_date - created_at)) / 86400), 
       0
     ) AS max
     FROM breakpoint_data
-    WHERE breakpoint_date IS NOT NULL AND input_date IS NOT NULL
+    WHERE breakpoint_date IS NOT NULL AND created_at IS NOT NULL
   master: true
   metrics:
     - max:

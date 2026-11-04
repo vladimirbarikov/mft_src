@@ -195,7 +195,7 @@ class BPDisplayAPI(BaseDisplayAPI):
                         "source": bp.source,
                         "batch_plan": bp.batch_plan,
                         "batch_fact": bp.batch_fact,
-                        "input_date": bp.input_date.isoformat() if bp.input_date else None,
+                        "created_at": bp.created_at.isoformat() if bp.created_at else None,
                     },
                     "summary": {
                         "new_parts_count": bp.new_parts_count,
@@ -654,7 +654,7 @@ class BPDisplayAPI(BaseDisplayAPI):
                         "source": bp.source,
                         "batch_plan": bp.batch_plan,
                         "batch_fact": bp.batch_fact,
-                        "input_date": bp.input_date.isoformat() if bp.input_date else None,
+                        "created_at": bp.created_at.isoformat() if bp.created_at else None,
                         "new_parts_count": bp.new_parts_count,
                         "old_parts_count": bp.old_parts_count,
                         "models_affected_count": bp.models_affected_count,
