@@ -21,7 +21,7 @@ oletools>=0.60.2
 # ========== Database ==========
 SQLAlchemy>=1.4.54
 SQLAlchemy-Utils>=0.42.0
-psycopg2-binary==2.9.10
+psycopg2-binary==2.9.11
 
 # ========== Data processing ==========
 polars==1.32.3
