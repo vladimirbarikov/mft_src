@@ -138,6 +138,7 @@ x-api-common:
       - ${AIRFLOW_PROJ_DIR:-.}/endpoints:/app/endpoints
       - ${AIRFLOW_PROJ_DIR:-.}/database:/app/database
       - ${AIRFLOW_PROJ_DIR:-.}/config:/app/config
+      - ${AIRFLOW_PROJ_DIR:-.}/dags:/app/dags
       - ${AIRFLOW_PROJ_DIR:-.}/data:/opt/airflow/data
       - ${AIRFLOW_PROJ_DIR:-.}/.env:/app/.env
     logging:
@@ -214,6 +215,32 @@ services:
     networks:
       - mft_airflow_network
   
+  db_initializer:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile.initializer
+    image: ${DB_INIT_IMAGE_NAME:-mft-db-initializer:1.0.0}
+    container_name: mft_db_initializer
+    environment:
+      DB_HOST: ${DB_HOST:-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-mft_db}
+      DB_USER: ${DB_USER:-mft_user}
+      DB_PASSWORD: ${DB_PASSWORD:-mft_password}
+      DB_MAX_RETRIES: ${DB_MAX_RETRIES:-5}
+      DB_RETRY_DELAY: ${DB_RETRY_DELAY:-2}
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/dags:/app/dags:ro
+      - ${AIRFLOW_PROJ_DIR:-.}/database:/app/database:ro
+      - ${AIRFLOW_PROJ_DIR:-.}/config:/app/config:ro
+      - ${AIRFLOW_PROJ_DIR:-.}/.env:/app/.env:ro
+    networks:
+      - mft_airflow_network
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+
   prometheus:
     image: prom/prometheus:v3.9.1
     container_name: prometheus
@@ -482,6 +509,8 @@ services:
       - ${AIRFLOW_PROJ_DIR:-.}:/sources
     depends_on:
       <<: *airflow-common-depends-on
+      db_initializer:
+        condition: service_completed_successfully
 
   airflow-scheduler:
     <<: *airflow-common
@@ -651,10 +680,12 @@ services:
         condition: service_healthy
       airflow-apiserver:
         condition: service_healthy
+      db_initializer:
+        condition: service_completed_successfully
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5002/api/mft/upload/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -670,10 +701,75 @@ services:
     ports:
       - "5003:5003"
     depends_on:
+      db_initializer:
+        condition: service_completed_successfully
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5003/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5003/api/mft/display/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  bp-display-api:
+    <<: *api-common
+    container_name: bp_display_api
+    environment:
+      <<: *api-env
+      FLASK_PORT: ${BP_DISPLAY_API_PORT:-5000}
+    command: python /app/endpoints/bp_display_api.py
+    ports:
+      - "5000:5000"
+    depends_on:
+      db_initializer:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/bp/display/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  part-history-api:
+    <<: *api-common
+    container_name: part_history_api
+    environment:
+      <<: *api-env
+      FLASK_PORT: ${PART_HISTORY_API_PORT:-5001}
+    command: python /app/endpoints/part_history_api.py
+    ports:
+      - "5001:5001"
+    depends_on:
+      db_initializer:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/api/part/history/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  mft-modify-api:
+    <<: *api-common
+    container_name: mft_modify_api
+    environment:
+      <<: *api-env
+      FLASK_PORT: ${MFT_MODIFY_API_PORT:-5004}
+    command: python /app/endpoints/mft_modify_api.py
+    ports:
+      - "5004:5004"
+    depends_on:
+      db_initializer:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5004/api/mft/modify/health"]
       interval: 30s
       timeout: 10s
       retries: 3
