@@ -113,10 +113,14 @@ Dependencies:
 
 Usage Example:
     from dags.tasks.bp_loader import load_bp_pipeline
-    from dags.tasks.connector import initialize_database
+    from dags.tasks.connector import connect_to_database
 
-    # Initialize database connection
-    engine = initialize_database(create_tables=False)
+    # Connect to the already-initialized mft_db
+    # (schema is created by the docker-compose `db_initializer` service)
+    engine = connect_to_database(
+        max_retries=int(os.getenv('DB_MAX_RETRIES', '5')),
+        retry_delay=int(os.getenv('DB_RETRY_DELAY', '2')),
+    )
 
     # Prepare transformed data
     transformed_data = {
@@ -158,13 +162,14 @@ Maintainer: PLD Engineering Center
 Version: 1.0.0
 Compatibility: Python 3.14.4+, SQLAlchemy 1.4.54+, PostgreSQL 12+
 Created: 2026-08-11
-Last Modified: 2026-08-13
+Last Modified: 2026-11-04
 License: MIT
 Status: Development
 """
 # Standard library imports
 from pathlib import Path
 import sys
+import os
 from datetime import datetime
 from typing import Any, Callable, Optional, Dict, List, Type, Tuple
 import traceback
@@ -190,7 +195,7 @@ from config.columns_config import (
     BP_ACTION_TYPES,
     BP_REQUIRED_FIELDS_BY_ACTION
 )
-from dags.tasks.connector import initialize_database
+from dags.tasks.connector import connect_to_database
 from dags.tasks.bp_mapper import BPObjectMapper, create_bp_mapper
 from dags.tasks.change_classifier import ChangeClassifier
 from database.database import (
@@ -2046,19 +2051,12 @@ def load_bp_pipeline(
 
     if engine is None:
         try:
-            engine = initialize_database(create_tables=False)
-            if not engine:
-                logger.error("Failed to initialize database!")
-                return {
-                    'total_breakpoints': 0,
-                    'successful': 0,
-                    'failed': 0,
-                    'errors': [],
-                    'breakpoint_results': {},
-                    'total_actions': {'ADD': 0, 'DELETE': 0, 'UPDATE': 0, 'REPLACE': 0},
-                }
+            engine = connect_to_database(
+                max_retries=int(os.getenv('DB_MAX_RETRIES', '5')),
+                retry_delay=int(os.getenv('DB_RETRY_DELAY', '2')),
+            )
         except SQLAlchemyError as e:
-            logger.error("Database error initializing database: %s", e)
+            logger.error("Database error while connecting to database: %s", e)
             return {
                 'total_breakpoints': 0,
                 'successful': 0,
@@ -2068,7 +2066,7 @@ def load_bp_pipeline(
                 'total_actions': {'ADD': 0, 'DELETE': 0, 'UPDATE': 0, 'REPLACE': 0},
             }
         except Exception as unexpected_error:
-            logger.error("Unexpected error initializing database: %s", unexpected_error)
+            logger.error("Unexpected error while connecting to database: %s", unexpected_error)
             return {
                 'total_breakpoints': 0,
                 'successful': 0,
@@ -2277,18 +2275,22 @@ def create_bp_loader(
     Factory to create BP loading function with pre-configured engine.
 
     Args:
-        engine: Optional SQLAlchemy engine
+        engine: Optional SQLAlchemy engine. If None, a new connection is
+                opened via `connect_to_database()`. The caller is responsible
+                for disposing the engine if it was created here.
 
     Returns:
         BP loader function
 
     Raises:
-        RuntimeError: If database initialization fails
+        ConnectionError: If `engine` was not provided and the database is
+                         unreachable (propagated from `connect_to_database()`).
     """
     if engine is None:
-        engine = initialize_database(create_tables=False)
-        if not engine:
-            raise RuntimeError("Failed to initialize database!")
+        engine = connect_to_database(
+            max_retries=int(os.getenv('DB_MAX_RETRIES', '5')),
+            retry_delay=int(os.getenv('DB_RETRY_DELAY', '2')),
+        )
 
     def loader(transformed_data: Dict[str, pl.DataFrame]) -> Dict[str, Any]:
         return load_bp_pipeline(transformed_data, engine)

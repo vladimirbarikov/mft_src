@@ -181,6 +181,7 @@ Status: Development
 # Standard library imports
 from pathlib import Path
 import sys
+import os
 from typing import Any, Optional, Union
 
 # Third-party imports
@@ -198,7 +199,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # Local imports
 from config import get_logger
 from config.columns_config import BP_JUNCTION_REQUIRED
-from dags.tasks.connector import initialize_database
+from dags.tasks.connector import connect_to_database
 from database.database import (
     SupplierData, PartData, BoxData, PalletData,
     ConfigurationData, ModelData, WorkshopData, LineData,
@@ -1050,7 +1051,10 @@ def create_bp_mapper(engine=None) -> BPObjectMapper:
     """
     try:
         if engine is None:
-            engine = initialize_database(create_tables=False)
+            engine = connect_to_database(
+                max_retries=int(os.getenv('DB_MAX_RETRIES', '5')),
+                retry_delay=int(os.getenv('DB_RETRY_DELAY', '2')),
+            )
 
         # Create session factory and session
         session_factory = sessionmaker(bind=engine)

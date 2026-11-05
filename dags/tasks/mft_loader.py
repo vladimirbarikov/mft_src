@@ -70,10 +70,14 @@ Module Functions:
 Usage Example:
     ```
     from dags.tasks.mft_loader import load_core_entity_tables, load_junction_tables
-    from dags.tasks.connector import initialize_database
+    from dags.tasks.connector import connect_to_database
     
-    # Initialize database connection
-    engine = initialize_database(create_tables=True)
+    # Connect to the already-initialized mft_db
+    # (schema is created by the docker-compose`db_initializer` service)
+    engine = connect_to_database(
+        max_retries=int(os.getenv('DB_MAX_RETRIES', '5')),
+        retry_delay=int(os.getenv('DB_RETRY_DELAY', '2')),
+    )
     
     # Load core entity tables first
     transformed_data = {
@@ -125,6 +129,7 @@ Status: Production
 # Standard library imports
 from pathlib import Path
 import sys
+import os
 from typing import Any, Optional
 import traceback
 
@@ -145,7 +150,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # Local imports
 from config import get_logger
 from config.columns_config import MFT_TABLE_REQUIREMENTS
-from dags.tasks.connector import initialize_database
+from dags.tasks.connector import connect_to_database
 from dags.tasks.mft_mapper import MFTObjectMapper, create_mft_mapper
 from database.database import (
     # Entity tables
@@ -551,12 +556,13 @@ def load_core_entity_tables(
     """
     logger.info("Starting core entity tables loading...")
 
-    # Initialize database if engine not provided
+    # Connect to the already-initialized mft_db
+    # (schema is created by the docker-compose `db_initializer` service)
     if engine is None:
-        engine = initialize_database(create_tables=True)
-        if not engine:
-            logger.error("Failed to initialize database!")
-            return {}
+        engine = connect_to_database(
+            max_retries=int(os.getenv('DB_MAX_RETRIES', '5')),
+            retry_delay=int(os.getenv('DB_RETRY_DELAY', '2')),
+        )
 
     results = {}
 
@@ -954,12 +960,13 @@ def load_junction_tables(
     """
     logger.info("Starting junction tables loading...")
 
-    # Initialize database if engine not provided
+    # Connect to the already-initialized mft_db
+    # (schema is created by the docker-compose `db_initializer` service)
     if engine is None:
-        engine = initialize_database(create_tables=False)
-        if not engine:
-            logger.error("Failed to initialize database!")
-            return {}
+        engine = connect_to_database(
+            max_retries=int(os.getenv('DB_MAX_RETRIES', '5')),
+            retry_delay=int(os.getenv('DB_RETRY_DELAY', '2')),
+        )
 
     # Verify core entity tables are loaded
     try:
