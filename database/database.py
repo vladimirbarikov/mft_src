@@ -264,8 +264,11 @@ from sqlalchemy.types import (
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 
-# Base class
+# Base class for tables (created by Base.metadata.create_all)
 Base = declarative_base()
+
+# Base class for views (read-only; NOT created by create_all)
+ViewBase = declarative_base()
 
 # ========== ENUM TYPES ==========
 LOCALIZATION_ENUM = SqlEnum(
@@ -280,27 +283,27 @@ PACKAGING_TYPE_ENUM = SqlEnum(
 
 BOM_PRODUCT_ENUM = SqlEnum(
     'a01g-r-bom', 'a08-r-bom', 'b02-r-bom', 'b04-r-bom', 'b06-r-bom', 'b16-r-bom', 'no data',
-    name='model_codes'
+    name='product_code'
 )
 
 MODEL_NAMES_ENUM = SqlEnum(
     'jolion', 'h3', 'f7', 'f7x', 'dargo', 'h7', 'no data',
-    name='model_names'
+    name='model_name'
 )
 
 WORKSHOP_CODES_ENUM = SqlEnum(
     'as', 'comp', 'paint', 'weld', 'stamp', 'en', 'nb', 'tr', 'ch', 'no data',
-    name='workshop_codes'
+    name='workshop_code'
 )
 
 WORKSHOP_NAMES_ENUM = SqlEnum(
     'assembly', 'component', 'painting', 'welding', 'stamping', 'engine', 'nobo', 'transmission', 'chassis', '', 'no data',
-    name='workshop_names'
+    name='workshop_name'
 )
 
 CONFIGURATION_ENUM = SqlEnum(
     'comfort', 'elite', 'tech-plus', 'premium', 's_version', 'no data',
-    name='configuration_types'
+    name='configuration_type'
 )
 
 BREAKPOINT_STATUS_ENUM = SqlEnum(

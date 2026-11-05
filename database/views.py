@@ -13,7 +13,7 @@ KEY VIEWS:
         - Complete part information with all related data
         - Denormalized view for active parts (is_active = true)
         - Used for part details display and search
-        
+
     2. v_part_history:
         - Complete part history with change source tracking
         - Shows all versions with breakpoint and classification info
@@ -38,9 +38,22 @@ KEY VIEWS:
         - Aggregated monthly statistics
         - Used for dashboards and analytics
 
+PRIMARY KEY STRATEGY:
+    PostgreSQL views do not have primary keys by definition. SQLAlchemy ORM
+    requires each mapped class to declare a primary key column.
+
+    For views where a natural unique column exists (e.g. v_breakpoint_summary:
+    one row per breakpoint_id, v_breakpoint_details: one row per breakpoint_id),
+    that column is used as the ORM primary key.
+
+    For views that produce multiple rows per logical entity (v_active_parts_full,
+    v_part_history, v_part_change_summary, v_parts_by_breakpoint,
+    v_breakpoint_changes_summary), a synthetic `row_id` is added via
+    ROW_NUMBER() OVER (...) to guarantee ORM identity-map correctness.
+
 VERSIONING STRATEGY:
-    - Views are created during database initialization
-    - Views are re-created on migration if structure changes
+    - Views are created during database initialization (see initializer.py)
+    - CREATE OR REPLACE VIEW is used; existing views are updated in place
     - Views do not store data (they are virtual tables)
     - Materialized views can be added later if needed
 
@@ -55,17 +68,17 @@ USAGE:
         BreakpointDetailsView,
         create_views
     )
-    
+
     # In API endpoint:
     part = session.query(ActivePartsFullView).filter(
         ActivePartsFullView.part_number == 'ABC-123'
     ).first()
 
-VERSION: 1.0.0
+VERSION: 1.1.0
 Compatibility: Python 3.14.4+, SQLAlchemy 1.4.54+, PostgreSQL 12+
 Maintainer: PLD Engineering Center
 Created: 2026-08-18
-Last Modified: 2026-08-18
+Last Modified: 2026-11-04
 License: MIT
 Status: Production
 """
@@ -82,7 +95,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 # Local imports
 from config import get_logger
-from database.database import Base
+from database.database import ViewBase
 
 # Logger setup
 logger = get_logger(__name__)
@@ -93,9 +106,16 @@ logger = get_logger(__name__)
 # ============================================================================
 
 # View 1: Active Parts Full (all data denormalized)
+# NOTE: is_fully_deactivated is a Python @property on PartData, not a column.
+#       The view filters WHERE ptm.is_active = true, so every row is active;
+#       "fully deactivated" would always be false here and is omitted.
+# NOTE: transmission is a separate dimension (transmission_data, M:N via
+#       configuration_to_transmission), not a column on configuration_data.
+# NOTE: ptm.deactivated_at is a Python @property; the actual timestamp comes
+#       from breakpoint_data.breakpoint_date via deactivated_by_breakpoint_id.
 VIEW_ACTIVE_PARTS_FULL_SQL = """
 CREATE OR REPLACE VIEW v_active_parts_full AS
-SELECT 
+SELECT
     -- Part data
     p.part_id,
     p.part_number,
@@ -105,8 +125,7 @@ SELECT
     p.original_part_id,
     p.created_at,
     p.deactivated_by_breakpoint_id AS part_deactivated_by_breakpoint_id,
-    p.is_fully_deactivated,
-    
+
     -- Supplier data
     s.supplier_id AS supplier_id,
     s.supplier_name,
@@ -114,7 +133,7 @@ SELECT
     s.city,
     s.street,
     s.building,
-    
+
     -- Box data
     b.box_id,
     b.box_type,
@@ -127,7 +146,7 @@ SELECT
     b.box_stacking,
     b.box_weight_kg,
     ptb.part_per_box,
-    
+
     -- Pallet data
     pl.pallet_id,
     pl.pallet_type,
@@ -140,7 +159,7 @@ SELECT
     pl.pallet_stacking,
     pl.pallet_weight_kg,
     btp.box_per_pallet,
-    
+
     -- Line data
     l.line_id,
     l.line_code,
@@ -148,19 +167,18 @@ SELECT
     w.workshop_code,
     w.workshop_name,
     w.workshop_id AS workshop_id,
-    
+
     -- Model & Configuration data
     ptm.model_id,
     m.model_code,
     m.model_name,
     ptm.is_active,
-    ptm.deactivated_at,
+    bd_deactivation.breakpoint_date AS deactivated_at,
     ptm.part_per_vehicle,
     ptm.deactivated_by_breakpoint_id AS model_deactivated_by_breakpoint_id,
     c.configuration_id,
     c.configuration,
-    c.transmission,
-    
+
     -- Breakpoint classification (latest)
     bd.breakpoint_id AS latest_breakpoint_id,
     bd.breakpoint_number AS latest_breakpoint_number,
@@ -192,6 +210,10 @@ LEFT JOIN part_to_model ptm ON p.part_id = ptm.part_id
 LEFT JOIN model_data m ON ptm.model_id = m.model_id
 LEFT JOIN configuration_data c ON ptm.configuration_id = c.configuration_id
 
+-- Deactivation breakpoint (for ptm, if any)
+LEFT JOIN breakpoint_data bd_deactivation
+    ON ptm.deactivated_by_breakpoint_id = bd_deactivation.breakpoint_id
+
 -- Latest breakpoint classification (for active version)
 LEFT JOIN part_to_breakpoint ptbkp ON p.part_id = ptbkp.new_part_id
 LEFT JOIN breakpoint_data bd ON ptbkp.breakpoint_id = bd.breakpoint_id
@@ -201,9 +223,15 @@ WHERE ptm.is_active = true;
 
 
 # View 2: Part History with change tracking
+# NOTE: transmission is not a column on configuration_data (separate dimension).
+# NOTE: ptm.deactivated_at is a Python @property; use breakpoint_date.
 VIEW_PART_HISTORY_SQL = """
 CREATE OR REPLACE VIEW v_part_history AS
-SELECT 
+SELECT
+    ROW_NUMBER() OVER (
+        ORDER BY p.part_number, p.version_number DESC,
+                 ptm.model_id, ptb.breakpoint_id
+    ) AS row_id,
     p.part_id,
     p.part_number,
     p.version_number,
@@ -212,20 +240,19 @@ SELECT
     p.created_at,
     p.original_part_id,
     p.deactivated_by_breakpoint_id AS part_deactivated_by_breakpoint_id,
-    
+
     s.supplier_id,
     s.supplier_name,
     s.localization,
-    
+
     ptm.model_id,
     m.model_code,
     m.model_name,
     ptm.is_active,
-    ptm.deactivated_at,
+    bd_deactivation.breakpoint_date AS deactivated_at,
     ptm.part_per_vehicle,
     c.configuration,
-    c.transmission,
-    
+
     ptb.breakpoint_id,
     bd.breakpoint_number,
     bd.breakpoint_date,
@@ -236,14 +263,14 @@ SELECT
     bd.change_nature,
     bd.batch_plan,
     bd.batch_fact,
-    
+
     -- Source tracking
-    CASE 
+    CASE
         WHEN bd.breakpoint_number LIKE 'MAN-%' THEN 'manual'
         WHEN bd.breakpoint_number LIKE 'BP-%' THEN 'automatic'
         ELSE 'unknown'
     END AS change_source,
-    
+
     -- Type of change (from part_to_breakpoint)
     CASE
         WHEN ptb.new_part_id IS NOT NULL AND ptb.old_part_id IS NULL THEN 'ADD'
@@ -252,7 +279,7 @@ SELECT
         WHEN ptb.new_part_id IS NOT NULL AND ptb.old_part_id IS NOT NULL THEN 'REPLACE'
         ELSE 'UNKNOWN'
     END AS change_action_type,
-    
+
     -- Part identifiers in transition
     ptb.new_part_id AS transition_new_part_id,
     ptb.old_part_id AS transition_old_part_id
@@ -265,6 +292,9 @@ LEFT JOIN part_to_model ptm ON p.part_id = ptm.part_id
 LEFT JOIN model_data m ON ptm.model_id = m.model_id
 LEFT JOIN configuration_data c ON ptm.configuration_id = c.configuration_id
 
+LEFT JOIN breakpoint_data bd_deactivation
+    ON ptm.deactivated_by_breakpoint_id = bd_deactivation.breakpoint_id
+
 LEFT JOIN part_to_breakpoint ptb ON p.part_id = ptb.new_part_id OR p.part_id = ptb.old_part_id
 LEFT JOIN breakpoint_data bd ON ptb.breakpoint_id = bd.breakpoint_id
 
@@ -272,10 +302,10 @@ ORDER BY p.part_number, p.version_number DESC;
 """
 
 
-# View 3: Breakpoint Summary
+# View 3: Breakpoint Summary (one row per breakpoint -> breakpoint_id is natural PK)
 VIEW_BREAKPOINT_SUMMARY_SQL = """
 CREATE OR REPLACE VIEW v_breakpoint_summary AS
-SELECT 
+SELECT
     bd.breakpoint_id,
     bd.breakpoint_number,
     bd.breakpoint_date,
@@ -284,23 +314,23 @@ SELECT
     bd.change_nature,
     bd.description,
     bd.created_at,
-    
+
     -- Count of parts affected
     COUNT(DISTINCT ptb.new_part_id) AS new_parts_count,
     COUNT(DISTINCT ptb.old_part_id) AS old_parts_count,
     COUNT(DISTINCT ptb.model_id) AS models_affected_count,
-    
+
     -- Aggregate of models affected
     STRING_AGG(DISTINCT m.model_code, ', ' ORDER BY m.model_code) AS models_affected,
-    
+
     -- Count by action type
     COUNT(CASE WHEN ptb.new_part_id IS NOT NULL AND ptb.old_part_id IS NULL THEN 1 END) AS add_count,
     COUNT(CASE WHEN ptb.new_part_id IS NULL AND ptb.old_part_id IS NOT NULL THEN 1 END) AS delete_count,
     COUNT(CASE WHEN ptb.new_part_id = ptb.old_part_id THEN 1 END) AS update_count,
     COUNT(CASE WHEN ptb.new_part_id IS NOT NULL AND ptb.old_part_id IS NOT NULL AND ptb.new_part_id != ptb.old_part_id THEN 1 END) AS replace_count,
-    
+
     -- Source
-    CASE 
+    CASE
         WHEN bd.breakpoint_number LIKE 'MAN-%' THEN 'manual'
         ELSE 'automatic'
     END AS source
@@ -309,7 +339,7 @@ FROM breakpoint_data bd
 LEFT JOIN part_to_breakpoint ptb ON bd.breakpoint_id = ptb.breakpoint_id
 LEFT JOIN model_data m ON ptb.model_id = m.model_id
 
-GROUP BY 
+GROUP BY
     bd.breakpoint_id,
     bd.breakpoint_number,
     bd.breakpoint_date,
@@ -323,34 +353,37 @@ ORDER BY bd.breakpoint_date DESC;
 """
 
 
-# View 4: Part Change Summary (per part)
+# View 4: Part Change Summary (per part; multiple rows per part_id due to model_id)
 VIEW_PART_CHANGE_SUMMARY_SQL = """
 CREATE OR REPLACE VIEW v_part_change_summary AS
-SELECT 
+SELECT
+    ROW_NUMBER() OVER (
+        ORDER BY p.part_number, p.version_number DESC, ptm.model_id
+    ) AS row_id,
     p.part_id,
     p.part_number,
     p.version_number,
     p.part_name,
     p.created_at AS version_created_at,
-    
+
     -- Latest status
     ptm.is_active AS current_is_active,
-    ptm.deactivated_at AS current_deactivated_at,
+    bd_deactivation.breakpoint_date AS current_deactivated_at,
     ptm.model_id,
     m.model_code,
-    
+
     -- Change counts
     COUNT(DISTINCT ptb.breakpoint_id) AS total_changes,
     COUNT(DISTINCT CASE WHEN bd.breakpoint_number LIKE 'MAN-%' THEN ptb.breakpoint_id END) AS manual_changes,
     COUNT(DISTINCT CASE WHEN bd.breakpoint_number LIKE 'BP-%' THEN ptb.breakpoint_id END) AS automatic_changes,
-    
+
     -- Latest change
     MAX(bd.breakpoint_date) AS latest_change_date,
     MAX(bd.breakpoint_number) AS latest_breakpoint_number,
-    
+
     -- Domain summary
     STRING_AGG(DISTINCT bd.change_domain, ', ' ORDER BY bd.change_domain) AS domains_affected,
-    
+
     -- Total versions
     COUNT(DISTINCT p2.part_id) AS total_versions
 
@@ -359,19 +392,22 @@ FROM part_data p
 LEFT JOIN part_to_model ptm ON p.part_id = ptm.part_id
 LEFT JOIN model_data m ON ptm.model_id = m.model_id
 
+LEFT JOIN breakpoint_data bd_deactivation
+    ON ptm.deactivated_by_breakpoint_id = bd_deactivation.breakpoint_id
+
 LEFT JOIN part_to_breakpoint ptb ON p.part_id = ptb.new_part_id OR p.part_id = ptb.old_part_id
 LEFT JOIN breakpoint_data bd ON ptb.breakpoint_id = bd.breakpoint_id
 
 LEFT JOIN part_data p2 ON p2.original_part_id = COALESCE(p.original_part_id, p.part_id)
 
-GROUP BY 
+GROUP BY
     p.part_id,
     p.part_number,
     p.version_number,
     p.part_name,
     p.created_at,
     ptm.is_active,
-    ptm.deactivated_at,
+    bd_deactivation.breakpoint_date,
     ptm.model_id,
     m.model_code
 
@@ -379,10 +415,10 @@ ORDER BY p.part_number, p.version_number DESC;
 """
 
 
-# View 5: Breakpoint Details (for filtering and search)
+# View 5: Breakpoint Details (one row per breakpoint -> breakpoint_id is natural PK)
 VIEW_BREAKPOINT_DETAILS_SQL = """
 CREATE OR REPLACE VIEW v_breakpoint_details AS
-SELECT 
+SELECT
     bd.breakpoint_id,
     bd.breakpoint_number,
     bd.breakpoint_date,
@@ -394,29 +430,29 @@ SELECT
     bd.batch_plan,
     bd.batch_fact,
     bd.created_at,
-    
-    CASE 
+
+    CASE
         WHEN bd.breakpoint_number LIKE 'MAN-%' THEN 'manual'
         WHEN bd.breakpoint_number LIKE 'BP-%' THEN 'automatic'
         ELSE 'unknown'
     END AS source,
-    
+
     COUNT(DISTINCT ptb.new_part_id) FILTER (WHERE ptb.new_part_id IS NOT NULL) AS new_parts_count,
     COUNT(DISTINCT ptb.old_part_id) FILTER (WHERE ptb.old_part_id IS NOT NULL) AS old_parts_count,
     COUNT(DISTINCT ptb.model_id) AS models_affected_count,
-    
+
     COUNT(CASE WHEN ptb.new_part_id IS NOT NULL AND ptb.old_part_id IS NULL THEN 1 END) AS add_count,
     COUNT(CASE WHEN ptb.new_part_id IS NULL AND ptb.old_part_id IS NOT NULL THEN 1 END) AS delete_count,
     COUNT(CASE WHEN ptb.new_part_id = ptb.old_part_id THEN 1 END) AS update_count,
     COUNT(CASE WHEN ptb.new_part_id IS NOT NULL AND ptb.old_part_id IS NOT NULL AND ptb.new_part_id != ptb.old_part_id THEN 1 END) AS replace_count,
-    
+
     STRING_AGG(DISTINCT m.model_code, ', ' ORDER BY m.model_code) AS models_affected
 
 FROM breakpoint_data bd
 LEFT JOIN part_to_breakpoint ptb ON bd.breakpoint_id = ptb.breakpoint_id
 LEFT JOIN model_data m ON ptb.model_id = m.model_id
 
-GROUP BY 
+GROUP BY
     bd.breakpoint_id,
     bd.breakpoint_number,
     bd.breakpoint_date,
@@ -433,35 +469,39 @@ ORDER BY bd.breakpoint_date DESC;
 """
 
 
-# View 6: Parts by Breakpoint
+# View 6: Parts by Breakpoint (one row per part_to_breakpoint -> use row_id)
 VIEW_PARTS_BY_BREAKPOINT_SQL = """
 CREATE OR REPLACE VIEW v_parts_by_breakpoint AS
-SELECT 
+SELECT
+    ROW_NUMBER() OVER (
+        ORDER BY bd.breakpoint_date DESC, bd.breakpoint_number,
+                 ptb.new_part_id, ptb.old_part_id, ptb.model_id
+    ) AS row_id,
     bd.breakpoint_id,
     bd.breakpoint_number,
     bd.breakpoint_date,
     bd.breakpoint_status,
     bd.change_domain,
     bd.change_nature,
-    
+
     old_p.part_id AS old_part_id,
     old_p.part_number AS old_part_number,
     old_p.part_name AS old_part_name,
     old_p.version_number AS old_version_number,
     old_p.part_weight_kg AS old_part_weight_kg,
     old_s.supplier_name AS old_supplier_name,
-    
+
     new_p.part_id AS new_part_id,
     new_p.part_number AS new_part_number,
     new_p.part_name AS new_part_name,
     new_p.version_number AS new_version_number,
     new_p.part_weight_kg AS new_part_weight_kg,
     new_s.supplier_name AS new_supplier_name,
-    
+
     ptb.model_id,
     m.model_code,
     m.model_name,
-    
+
     CASE
         WHEN ptb.new_part_id IS NOT NULL AND ptb.old_part_id IS NULL THEN 'ADD'
         WHEN ptb.new_part_id IS NULL AND ptb.old_part_id IS NOT NULL THEN 'DELETE'
@@ -485,29 +525,34 @@ ORDER BY bd.breakpoint_date DESC, bd.breakpoint_number;
 """
 
 
-# View 7: Breakpoint Changes Summary (for dashboard)
+# View 7: Breakpoint Changes Summary (aggregated; use row_id)
 VIEW_BREAKPOINT_CHANGES_SUMMARY_SQL = """
 CREATE OR REPLACE VIEW v_breakpoint_changes_summary AS
-SELECT 
+SELECT
+    ROW_NUMBER() OVER (
+        ORDER BY DATE_TRUNC('month', bd.breakpoint_date) DESC,
+                 bd.change_domain, bd.change_nature,
+                 CASE WHEN bd.breakpoint_number LIKE 'MAN-%' THEN 'manual' ELSE 'automatic' END
+    ) AS row_id,
     DATE_TRUNC('month', bd.breakpoint_date) AS month,
     bd.change_domain,
     bd.change_nature,
-    CASE 
+    CASE
         WHEN bd.breakpoint_number LIKE 'MAN-%' THEN 'manual'
         ELSE 'automatic'
     END AS source,
     COUNT(*) AS breakpoint_count,
-    COUNT(DISTINCT ptb.part_id) AS parts_affected_count,
+    COUNT(DISTINCT COALESCE(ptb.new_part_id, ptb.old_part_id)) AS parts_affected_count,
     COUNT(DISTINCT ptb.model_id) AS models_affected_count
-    
+
 FROM breakpoint_data bd
 LEFT JOIN part_to_breakpoint ptb ON bd.breakpoint_id = ptb.breakpoint_id
 
-GROUP BY 
+GROUP BY
     DATE_TRUNC('month', bd.breakpoint_date),
     bd.change_domain,
     bd.change_nature,
-    source
+    CASE WHEN bd.breakpoint_number LIKE 'MAN-%' THEN 'manual' ELSE 'automatic' END
 
 ORDER BY month DESC, breakpoint_count DESC;
 """
@@ -517,10 +562,10 @@ ORDER BY month DESC, breakpoint_count DESC;
 # SQLALCHEMY ORM MAPPINGS FOR VIEWS
 # ============================================================================
 
-class ActivePartsFullView(Base):
+class ActivePartsFullView(ViewBase):
     """
     ORM mapping for v_active_parts_full view.
-    
+
     Provides denormalized access to all part data with related entities.
     Use this view for read operations where performance is critical.
     """
@@ -536,7 +581,6 @@ class ActivePartsFullView(Base):
     original_part_id = Column(String(40))
     created_at = Column(DateTime)
     part_deactivated_by_breakpoint_id = Column(String(40))
-    is_fully_deactivated = Column(Boolean)
 
     # Supplier data
     supplier_id = Column(String(40))
@@ -590,7 +634,6 @@ class ActivePartsFullView(Base):
     model_deactivated_by_breakpoint_id = Column(String(40))
     configuration_id = Column(String(40))
     configuration = Column(String(20))
-    transmission = Column(String(100))
 
     # Latest breakpoint classification
     latest_breakpoint_id = Column(String(40))
@@ -601,17 +644,18 @@ class ActivePartsFullView(Base):
     latest_breakpoint_status = Column(String(20))
 
 
-class PartHistoryView(Base):
+class PartHistoryView(ViewBase):
     """
     ORM mapping for v_part_history view.
-    
+
     Provides complete part history with change source tracking.
     Use this view for audit and version history queries.
     """
     __tablename__ = 'v_part_history'
     __table_args__ = {'info': {'is_view': True}}
 
-    part_id = Column(String(40), primary_key=True)
+    row_id = Column(Integer, primary_key=True)
+    part_id = Column(String(40))
     part_number = Column(String(50))
     version_number = Column(Integer)
     part_name = Column(String(100))
@@ -631,7 +675,6 @@ class PartHistoryView(Base):
     deactivated_at = Column(DateTime)
     part_per_vehicle = Column(SmallInteger)
     configuration = Column(String(20))
-    transmission = Column(String(100))
 
     breakpoint_id = Column(String(40))
     breakpoint_number = Column(String(10))
@@ -650,10 +693,10 @@ class PartHistoryView(Base):
     transition_old_part_id = Column(String(40))
 
 
-class BreakpointSummaryView(Base):
+class BreakpointSummaryView(ViewBase):
     """
     ORM mapping for v_breakpoint_summary view.
-    
+
     Provides aggregated breakpoint statistics.
     Use this view for reporting and dashboard queries.
     """
@@ -682,17 +725,18 @@ class BreakpointSummaryView(Base):
     source = Column(String(20))
 
 
-class PartChangeSummaryView(Base):
+class PartChangeSummaryView(ViewBase):
     """
     ORM mapping for v_part_change_summary view.
-    
+
     Provides change summary per part.
     Use this view for part analytics and change tracking.
     """
     __tablename__ = 'v_part_change_summary'
     __table_args__ = {'info': {'is_view': True}}
 
-    part_id = Column(String(40), primary_key=True)
+    row_id = Column(Integer, primary_key=True)
+    part_id = Column(String(40))
     part_number = Column(String(50))
     version_number = Column(Integer)
     part_name = Column(String(100))
@@ -713,10 +757,10 @@ class PartChangeSummaryView(Base):
     total_versions = Column(Integer)
 
 
-class BreakpointDetailsView(Base):
+class BreakpointDetailsView(ViewBase):
     """
     ORM mapping for v_breakpoint_details view.
-    
+
     Provides detailed breakpoint information with counts.
     Use this view for breakpoint search and filtering.
     """
@@ -749,17 +793,18 @@ class BreakpointDetailsView(Base):
     models_affected = Column(Text)
 
 
-class PartsByBreakpointView(Base):
+class PartsByBreakpointView(ViewBase):
     """
     ORM mapping for v_parts_by_breakpoint view.
-    
+
     Provides parts affected by each breakpoint.
     Use this view for detailed breakpoint change analysis.
     """
     __tablename__ = 'v_parts_by_breakpoint'
     __table_args__ = {'info': {'is_view': True}}
 
-    breakpoint_id = Column(String(40), primary_key=True)
+    row_id = Column(Integer, primary_key=True)
+    breakpoint_id = Column(String(40))
     breakpoint_number = Column(String(10))
     breakpoint_date = Column(DateTime)
     breakpoint_status = Column(String(20))
@@ -787,16 +832,17 @@ class PartsByBreakpointView(Base):
     action_type = Column(String(20))
 
 
-class BreakpointChangesSummaryView(Base):
+class BreakpointChangesSummaryView(ViewBase):
     """
     ORM mapping for v_breakpoint_changes_summary view.
-    
+
     Provides aggregated monthly statistics.
     Use this view for dashboards and analytics.
     """
     __tablename__ = 'v_breakpoint_changes_summary'
     __table_args__ = {'info': {'is_view': True}}
 
+    row_id = Column(Integer, primary_key=True)
     month = Column(DateTime)
     change_domain = Column(String(20))
     change_nature = Column(String(20))
@@ -833,11 +879,11 @@ MATERIALIZED_VIEWS = {
 def create_views(engine, drop_existing: bool = False) -> None:
     """
     Create all database views.
-    
+
     Args:
         engine: SQLAlchemy engine
         drop_existing: If True, drop existing views before creating
-        
+
     Raises:
         SQLAlchemyError: On database errors
         ValueError: If engine is None
@@ -851,7 +897,10 @@ def create_views(engine, drop_existing: bool = False) -> None:
     logger.info("Starting database views creation (drop_existing=%s)", drop_existing)
 
     try:
-        with engine.connect() as connection:
+        # engine.begin() auto-commits on success, auto-rollbacks on error.
+        # Do NOT call connection.commit() — Connection has no commit() in SA 2.x,
+        # and in 1.4 legacy mode it's safer to rely on begin()'s transactional context.
+        with engine.begin() as connection:
             # Drop existing views if requested
             if drop_existing:
                 for view_name in reversed(list(VIEW_DEFINITIONS.keys())):
@@ -863,7 +912,6 @@ def create_views(engine, drop_existing: bool = False) -> None:
                             "SQLAlchemy error dropping view %s: %s",
                             view_name, str(e)
                         )
-                        # Continue with other views
                     except (ValueError, TypeError, AttributeError) as e:
                         logger.warning(
                             "Data error dropping view %s: %s",
@@ -902,8 +950,8 @@ def create_views(engine, drop_existing: bool = False) -> None:
                         f"Unexpected error creating view {view_name}: {unexpected_error}"
                     ) from unexpected_error
 
-            connection.commit()
-            logger.info("All %d database views created successfully", len(VIEW_DEFINITIONS))
+        # No connection.commit() — engine.begin() commits automatically.
+        logger.info("All %d database views created successfully", len(VIEW_DEFINITIONS))
 
     except SQLAlchemyError as e:
         logger.error("SQLAlchemy error creating views: %s", str(e))
@@ -923,10 +971,10 @@ def create_views(engine, drop_existing: bool = False) -> None:
 def drop_views(engine) -> None:
     """
     Drop all database views.
-    
+
     Args:
         engine: SQLAlchemy engine
-        
+
     Raises:
         SQLAlchemyError: On database errors
         ValueError: If engine is None
@@ -940,7 +988,8 @@ def drop_views(engine) -> None:
     logger.info("Starting database views drop")
 
     try:
-        with engine.connect() as connection:
+        # engine.begin() auto-commits on success, auto-rollbacks on error.
+        with engine.begin() as connection:
             dropped_count = 0
             for view_name in reversed(list(VIEW_DEFINITIONS.keys())):
                 try:
@@ -952,7 +1001,6 @@ def drop_views(engine) -> None:
                         "SQLAlchemy error dropping view %s: %s",
                         view_name, str(e)
                     )
-                    # Continue with other views
                 except (ValueError, TypeError, AttributeError) as e:
                     logger.warning(
                         "Data error dropping view %s: %s",
@@ -964,8 +1012,8 @@ def drop_views(engine) -> None:
                         view_name, unexpected_error
                     )
 
-            connection.commit()
-            logger.info("Dropped %d views successfully", dropped_count)
+        # No connection.commit() — engine.begin() commits automatically.
+        logger.info("Dropped %d views successfully", dropped_count)
 
     except SQLAlchemyError as e:
         logger.error("SQLAlchemy error dropping views: %s", str(e))
@@ -985,14 +1033,14 @@ def drop_views(engine) -> None:
 def view_exists(engine, view_name: str) -> bool:
     """
     Check if a view exists in the database.
-    
+
     Args:
         engine: SQLAlchemy engine
         view_name: Name of the view to check
-        
+
     Returns:
         bool: True if view exists, False otherwise
-        
+
     Raises:
         ValueError: If engine is None or view_name is empty
     """
@@ -1010,8 +1058,8 @@ def view_exists(engine, view_name: str) -> bool:
             result = connection.execute(
                 text("""
                     SELECT EXISTS (
-                        SELECT 1 
-                        FROM information_schema.views 
+                        SELECT 1
+                        FROM information_schema.views
                         WHERE table_name = :view_name
                     )
                 """),
@@ -1046,14 +1094,14 @@ def view_exists(engine, view_name: str) -> bool:
 def get_view_definition(engine, view_name: str) -> Optional[str]:
     """
     Get the definition of a view.
-    
+
     Args:
         engine: SQLAlchemy engine
         view_name: Name of the view
-        
+
     Returns:
         str: View definition or None if view doesn't exist
-        
+
     Raises:
         ValueError: If engine is None or view_name is empty
     """
