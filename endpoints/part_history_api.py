@@ -60,7 +60,7 @@ load_dotenv(dotenv_path=env_path)
 
 # Local imports
 from config import get_logger
-from dags.tasks.connector import initialize_database
+from dags.tasks.connector import connect_to_database
 from endpoints.base_display_api import BaseDisplayAPI
 from database.views import (
     PartHistoryView,
@@ -87,7 +87,7 @@ RATE_LIMIT = os.getenv('RATE_LIMIT', '10 per minute')
 RATE_LIMIT_STORAGE_URL = os.getenv('RATE_LIMIT_STORAGE_URL', 'memory://')
 
 # ========== CREATING BLUEPRINT ==========
-part_bp = Blueprint('part_history', __name__, url_prefix='/api/parts')
+part_bp = Blueprint('part_history', __name__, url_prefix='/api/part/history')
 
 # ========== RATE LIMITING SETUP ==========
 limiter = Limiter(
@@ -210,7 +210,6 @@ class PartHistoryAPI(BaseDisplayAPI):
                             "supplier_name": self.normalize_output("SUPPLIER_NAME", h.supplier_name),
                             "localization": self.normalize_output("LOCALIZATION", h.localization),
                             "configuration": self.normalize_output("CONFIGURATION", h.configuration),
-                            "transmission": h.transmission,
                             "is_active": h.is_active,
                             "deactivated_at": h.deactivated_at.isoformat() if h.deactivated_at else None,
                             "created_at": h.created_at.isoformat() if h.created_at else None,
@@ -620,7 +619,10 @@ class PartHistoryAPI(BaseDisplayAPI):
 def get_part_history_api():
     """Get PartHistoryAPI instance."""
     try:
-        engine = initialize_database(create_tables=False)
+        engine = connect_to_database(
+            max_retries=int(os.getenv('DB_MAX_RETRIES', '5')),
+            retry_delay=int(os.getenv('DB_RETRY_DELAY', '2')),
+        )
         if engine:
             try:
                 return PartHistoryAPI(engine)
@@ -637,14 +639,14 @@ def get_part_history_api():
         logger.warning("Database engine is None")
         return None
     except SQLAlchemyError as e:
-        logger.error("SQLAlchemy error initializing database: %s", e)
+        logger.error("SQLAlchemy error connecting to database: %s", e)
         return None
     except (ValueError, TypeError, AttributeError) as e:
-        logger.error("Error initializing database: %s", e)
+        logger.error("Error connecting to database: %s", e)
         return None
     except Exception as unexpected_error:
         logger.error(
-            "Unexpected error initializing database: %s",
+            "Unexpected error while connecting to database: %s",
             unexpected_error,
             exc_info=True
         )
@@ -1117,21 +1119,24 @@ def create_app():
     except (ValueError, TypeError, AttributeError) as e:
         logger.error("Error initializing rate limiter: %s", e)
 
-    # Database connection check
+    # Database connection (schema is pre-created by the docker-compose `db_initializer` service
     try:
-        engine = initialize_database(create_tables=False)
+        engine = connect_to_database(
+            max_retries=int(os.getenv('DB_MAX_RETRIES', '5')),
+            retry_delay=int(os.getenv('DB_RETRY_DELAY', '2')),
+        )
         if engine:
             app.extensions['db_engine'] = engine
-            logger.info("Database engine initialized")
+            logger.info("Database engine ready")
         else:
             logger.warning("Database engine is None")
     except SQLAlchemyError as e:
-        logger.error("SQLAlchemy error initializing database: %s", e)
+        logger.error("SQLAlchemy error connecting to database: %s", e)
     except (ValueError, TypeError, AttributeError) as e:
-        logger.error("Error initializing database: %s", e)
+        logger.error("Error connecting to database: %s", e)
     except Exception as unexpected_error:
         logger.error(
-            "Unexpected error during database initialization: %s",
+            "Unexpected error while connecting to database: %s",
             unexpected_error,
             exc_info=True
         )

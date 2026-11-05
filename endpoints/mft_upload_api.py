@@ -338,7 +338,7 @@ class FileMetadataStore:
 file_metadata_store = FileMetadataStore(retention_hours=24)
 
 # ========== CREATING BLUEPRINT ==========
-upload_bp = Blueprint('upload', __name__)
+upload_bp = Blueprint('upload', __name__, url_prefix='/api/mft/upload')
 
 # ========== RATE LIMITING SETUP ==========
 limiter = Limiter(

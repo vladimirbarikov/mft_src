@@ -38,7 +38,7 @@ import pytz
 
 # Third-party imports
 import polars as pl
-from sqlalchemy import String
+from sqlalchemy import String, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import (
     SQLAlchemyError, IntegrityError, DataError, StatementError,
@@ -455,7 +455,7 @@ class BaseDisplayAPI:
             ...     data = api.get_data()
         """
         def _check(session):
-            session.execute('SELECT 1').scalar()
+            session.execute(text('SELECT 1')).scalar()
             return True
 
         result = self._safe_query(_check)

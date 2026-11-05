@@ -137,7 +137,7 @@ load_dotenv(dotenv_path=env_path)
 
 # Local imports
 from config import get_logger
-from dags.tasks.connector import initialize_database
+from dags.tasks.connector import connect_to_database
 from dags.tasks.change_classifier import ChangeClassifier
 from endpoints.auth import (
     jwt_required,
@@ -180,7 +180,7 @@ RATE_LIMIT = os.getenv('RATE_LIMIT', '10 per minute')
 RATE_LIMIT_STORAGE_URL = os.getenv('RATE_LIMIT_STORAGE_URL', 'memory://')
 
 # ========== CREATING BLUEPRINT ==========
-modify_bp = Blueprint('modify', __name__, url_prefix='/api/v1')
+modify_bp = Blueprint('modify', __name__, url_prefix='/api/mft/modify')
 
 # ========== RATE LIMITING SETUP ==========
 limiter = Limiter(
@@ -508,7 +508,6 @@ class ManualChangeService:
             'line_name': part.line_name,
             'workshop_code': part.workshop_code,
             'configuration': part.configuration,
-            'transmission': part.transmission,
             'part_per_vehicle': part.part_per_vehicle,
             'part_per_box': part.part_per_box,
             'box_per_pallet': part.box_per_pallet,
@@ -1059,10 +1058,20 @@ class ManualChangeService:
 # ============================================================================
 
 def get_db_session() -> Session:
-    """Get database session."""
-    engine = initialize_database(create_tables=False)
-    if not engine:
-        raise RuntimeError("Failed to initialize database")
+    """
+    Get a database session connected to the pre-initialized mft_db.
+
+    The schema is created by the `db_initializer` docker-compose service,
+    not by this API. This function only opens a connection.
+
+    Raises:
+        ConnectionError: If the database is unreachable
+                         (propagated from `connect_to_database()`).
+    """
+    engine = connect_to_database(
+        max_retries=int(os.getenv('DB_MAX_RETRIES', '5')),
+        retry_delay=int(os.getenv('DB_RETRY_DELAY', '2')),
+    )
     return Session(engine)
 
 
@@ -1576,7 +1585,10 @@ def health_check():
     """Health check endpoint."""
     engine = None
     try:
-        engine = initialize_database(create_tables=False)
+        engine = connect_to_database(
+            max_retries=int(os.getenv('DB_MAX_RETRIES', '5')),
+            retry_delay=int(os.getenv('DB_RETRY_DELAY', '2')),
+        )
         db_status = 'healthy' if engine else 'unhealthy'
 
         return {
