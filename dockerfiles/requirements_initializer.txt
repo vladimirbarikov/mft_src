@@ -1,0 +1,7 @@
+# ========== Database ==========
+SQLAlchemy==1.4.54
+SQLAlchemy-Utils==0.42.0
+psycopg2-binary==2.9.11
+
+# ========== Web framework and security ==========
+python-dotenv==1.2.1

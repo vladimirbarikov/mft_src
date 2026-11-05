@@ -1,0 +1,30 @@
+# Minimal image for MFT database initialization (mft_db only).
+# Runs once on stack startup: creates the MFT database and its tables.
+# Deliberately independent from the Airflow image:
+#   - own Python (3.14) and dependencies,
+#   - no AIRFLOW__* env, no Airflow code.
+#
+# Used by the `db_initializer` service in docker-compose.yml.
+
+FROM python:3.14-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+# psycopg2-binary ships prebuilt wheels, but libpq is needed at runtime.
+# gcc is intentionally NOT installed: psycopg2-binary is a wheel.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY dockerfiles/requirements_initializer.txt /app/requirements_initializer.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r /app/requirements_initializer.txt
+
+# Project code is mounted via volumes in docker-compose (read-only).
+# Nothing is COPYed here, so the image stays small and rebuild-free.
+
+CMD ["python", "-m", "dags.tasks.initializer"]
