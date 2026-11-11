@@ -31,6 +31,8 @@ DATABASE ENUM TYPES, MODELS AND TABLES:
     - BREAKPOINT_STATUS_ENUM:
         - approved, published, closed - Breakpoint execution statuses.
         - no data - if no information about status.
+    - FLOW_DIRECTION_ENUM:
+        - in, out - Workshop flow direction (in / out).
 
 2. CORE ENTITY TABLES:
     - supplier_data              - Information about component suppliers
@@ -39,11 +41,14 @@ DATABASE ENUM TYPES, MODELS AND TABLES:
     - pallet_data                - Pallet (platform) specifications
     - model_data                 - Vehicle models (bom_product + model_code)
     - configuration_data         - Vehicle configuration types (comfort, elite, etc.)
-    - engine_data                - Engine specifications (GW4B15L, etc.)
     - transmission_data          - Transmission / drivetrain specifications (4x4, 4x2, etc.)
+    - color_data                 - Color master data (for parts)
+    - engine_data                - Engine specifications (GW4B15L, etc.)
     - workshop_data              - Production workshops
     - line_data                  - Production lines
     - breakpoint_data            - Technical changes (breakpoints)
+    - breakpoint_checklist_data  - Breakpoint checklist answers (1:1 with breakpoint_data)
+    - batch_data                 - Production batches (from configuration Excel)
     - department_data            - Company departments
     - user_role_data             - Application-level roles (mapped to PostgreSQL roles)
     - user_data                  - Application user accounts
@@ -55,8 +60,11 @@ DATABASE ENUM TYPES, MODELS AND TABLES:
     - box_to_pallet              - Parts ↔ Boxes ↔ Pallets (with boxes per pallet)
     - part_to_model              - Parts ↔ Models ↔ Configurations (with quantity per vehicle)
     - part_to_line               - Parts ↔ Production lines
+    - part_to_color              - Parts ↔ Colors (M:N)
     - part_to_breakpoint         - Part version history through breakpoints
     - configuration_to_transmission - SOFT allow-list of (configuration, transmission) combinations
+    - batch_to_vehicle           - Allowed vehicle combinations for a batch
+                                   (M:N: batch ↔ model ↔ configuration ↔ transmission ↔ engine)
 
 STORED INFORMATION:
 
@@ -70,6 +78,7 @@ STORED INFORMATION:
    - Identifiers: PART_ID, PART_NUMBER
    - Description: name, weight (kg) with CheckConstraint (>= 0)
    - Supplier relationship (ForeignKey with RESTRICT on delete)
+   - Color: M:N via part_to_color (one part may exist in several colors)
    - Versioning: original_part_id, version_number
    - Soft delete support: deactivated_by_breakpoint_id, computed is_active
    - deactivated_by_breakpoint_id: References breakpoint that caused deactivation (SET NULL on delete)
@@ -87,72 +96,136 @@ STORED INFORMATION:
    - Engine code (GW4B15L, GW4G15N, ..., no data) — unique
    - Optional attributes: name, displacement (cc), power (hp), fuel type
    - Soft-disable flag (is_active)
-   - Independent vehicle dimension: no M:N allow-list with engines/transmissions
+   - Independent vehicle dimension
 
 5. TRANSMISSIONS (transmission_data):
    - Transmission code (4x4, 4x2, ..., no data) — unique
-   - Optional attributes: name, drive_type (full-time, part-time, on-demand)
    - Soft-disable flag (is_active)
    - Independent vehicle dimension: allowed combinations with configurations
      are stored in configuration_to_transmission (SOFT allow-list, not FK-enforced)
+   - NOTE: transmission_name removed; 'transmission' is the sole business key
 
-6. PRODUCTION (workshop_data, line_data):
+6. COLORS (color_data):
+   - Color code (e.g. color code from Excel) — unique
+   - Color name (human-readable) — unique
+   - Linked to parts via part_to_color (M:N)
+   - In the BP pipeline only the AFTER part provides a color
+     (the BEFORE part has no color yet; the DB accumulates colors over time)
+
+7. PRODUCTION (workshop_data, line_data):
    - Workshops: code (as, comp, paint, etc.) and name
    - Lines: code, name, workshop affiliation (ForeignKey with RESTRICT on delete)
 
-7. VEHICLE MODELS (model_data):
+8. VEHICLE MODELS (model_data):
    - BOM product codes: a01g-r-bom, a08-r-bom, b02-r-bom, b04-r-bom,
      b06-r-bom, b16-r-bom, no data
-   - Model codes (e.g. CC6460AB26B) — unique
+   - Model codes (e.g. CC6460AB26B) — unique business key of a model variant
    - Model names: jolion, h3, f7, f7x, dargo, h7, no data
+   - NOTE: bom_product is NOT unique: one BOM product may have several
+     model_code variants (e.g. A01G-R-BOM → CC7150BA24C, CC6450BA26B, ...)
+   - Uniqueness is guaranteed by model_code
 
-8. TECHNICAL CHANGES (breakpoint_data):
-   - Breakpoint number (unique, mandatory) and date
-   - Entry date into the system (auto-generated)
-   - Batch information (plan / fact)
-   - Description of change and solution
-   - Classification: change_domain (supplier, packaging, production, spec,
-     config, multi) and change_nature (business, technical, correction)
+9. BATCHES (batch_data, batch_to_vehicle):
+   - Batch code (letters only: RAS, RAN, ...) — unique business key
+   - Total quantity of vehicles in the batch (independent of variant split)
+   - Allowed vehicle combinations stored in batch_to_vehicle:
+     (batch, model, configuration, transmission, engine)
+   - One batch may be produced in several combinations
+     (e.g. RAS with GW4B15D and with GW4B15L)
+   - Batch data is typically loaded once from configuration Excel
+     (2026-07-06_configuration.xlsx) and then maintained via API
 
-9. CHANGE HISTORY (part_to_breakpoint):
-   - Links part versions through technical changes (breakpoints)
-   - Each change is specific to a model (model_id)
-   - Type of change determined by presence of IDs:
-        * ADD: new_part_id IS NOT NULL, old_part_id IS NULL
-        * DELETE: new_part_id IS NULL, old_part_id IS NOT NULL
-        * UPDATE: new_part_id = old_part_id (same part)
-        * REPLACE: Two records (DELETE old + ADD new) in same breakpoint
-   - All part data accessed through relationships to part_data
-   - Composite primary key: (new_part_id, old_part_id, breakpoint_id, model_id)
+10. TECHNICAL CHANGES (breakpoint_data):
+    - Breakpoint number (unique, mandatory) and date
+    - Entry date into the system (auto-generated)
+    - Batch information (plan / fact / feedback)
+    - Description of change and solution
+    - Free-text comments (from Excel)
+    - Classification: change_domain (supplier, packaging, production, spec,
+      config, color, multi) and change_nature (business, technical, correction)
 
-10. USERS (department_data, user_role_data, user_data):
-   - Departments: code and name (unique), soft-disable flag
-   - Roles: application role_code (admin | editor | viewer), human-readable
-     role_name, and pg_role_name (actual PostgreSQL role provisioned by
-     user_roles.py: mft_admin / mft_editor / mft_viewer)
-   - Users: username, email (both unique), full_name, hashed_password,
-     role_id (FK, RESTRICT), department_id (FK, RESTRICT, optional),
-     is_active flag, last_login_at, created_at, updated_at
-   - NOTE: user_data stores APPLICATION users; their SQL privileges come
-     from the PostgreSQL role referenced via role_id -> pg_role_name.
-     The PostgreSQL role itself is managed by user_roles.py.
+11. CHANGE HISTORY (part_to_breakpoint):
+    - Links part versions through technical changes (breakpoints)
+    - Each change is specific to a model AND configuration
+    - Type of change determined by presence of IDs:
+         * ADD: new_part_id IS NOT NULL, old_part_id IS NULL
+         * DELETE: new_part_id IS NULL, old_part_id IS NOT NULL
+         * UPDATE: new_part_id = old_part_id (same part)
+         * REPLACE: Two records (DELETE old + ADD new) in same breakpoint
+    - All part data accessed through relationships to part_data
+    - Composite primary key: (new_part_id, old_part_id, breakpoint_id,
+      model_id, configuration_id)
+    - Additional attributes:
+         * interchangeable: free-form String (yes / no /
+           "new can replace old, but old can't replace new" / ...)
+         * production_part_disposal: whether old part can still be used in production
+         * stock_1001: parts in transit
+         * stock_1002: parts at container terminal
+         * stock_1003: central warehouse
+         * stock_1005: safety stock in containers
+         * stock_1604: defective parts
+         * stock_3029: safety stock on racks (maps from Excel QUANTITY_PARTS_IN_SS)
+    - stock_* fields use Numeric(12, 3) to support both discrete parts (pcs)
+      and bulk materials (kg, l)
+    - stock_* fields are filled either by the BP pipeline (from Excel) or by
+      the interactive monitoring checklist (breakpoint_refactoring_api.py)
 
-11. PRODUCTION PLAN (production_plan_data, production_plan_day_data):
-   - One record per Excel line: batch, batch_date, workshop, model,
-     configuration, engine, transmission, quantity, comments, created_by
-   - Daily breakdown (day 1..31 in Excel) stored in production_plan_day_data
-     as separate rows: (plan_id, plan_date, planned_quantity, actual_quantity)
-   - NO hard allow-list of (model, configuration, engine, transmission):
-     ProductionPlanData is the source of truth for which combinations exist.
-     Application may warn about "new" combinations based on history.
-   - batch is NOT unique: the same batch may appear in several records
-     (carry-over to another day, partial production, multiple workshops)
+12. USERS (department_data, user_role_data, user_data):
+    - Departments: code and name (unique), soft-disable flag
+    - Roles: application role_code (admin | editor | viewer), human-readable
+      role_name, and pg_role_name (actual PostgreSQL role provisioned by
+      user_roles.py: mft_admin / mft_editor / mft_viewer)
+    - Users: username, email (both unique), full_name, hashed_password,
+      role_id (FK, RESTRICT), department_id (FK, RESTRICT, optional),
+      is_active flag, last_login_at, created_at, updated_at
+    - NOTE: user_data stores APPLICATION users; their SQL privileges come
+      from the PostgreSQL role referenced via role_id -> pg_role_name.
+      The PostgreSQL role itself is managed by user_roles.py.
+
+13. PRODUCTION PLAN (production_plan_data, production_plan_day_data):
+    - One record per Excel line: batch, batch_date, workshop, model,
+      configuration, engine, transmission, quantity, comments, created_by
+    - Daily breakdown (day 1..31 in Excel) stored in production_plan_day_data
+      as separate rows: (plan_id, plan_date, planned_quantity, actual_quantity)
+    - NO hard allow-list of (model, configuration, engine, transmission):
+      ProductionPlanData is the source of truth for which combinations exist.
+      Application may warn about "new" combinations based on history.
+    - batch is NOT unique: the same batch may appear in several records
+      (carry-over to another day, partial production, multiple workshops)
+
+14. BREAKPOINT CHECKLIST (breakpoint_checklist_data):
+    - One-to-one with breakpoint_data (one BP has at most one checklist)
+    - Workflow: not_started → in_progress → completed
+    - Mirrors the 5 sections of bp_data_table.html:
+        * Section 1: Part number changes
+            - part_number_changed (main yes/no)
+            - bom_* (BOM replaced/new/deleted + confirmation + comment, DM)
+            - stock_*_has_remains + stock_*_completed (10 locations:
+              6 SAP + 4 in-shop zones; quantities live in
+              PartToBreakpoint.stock_* per old↔new pair)
+            - disposal_* (localization, checklist_interchangeable,
+              require_disposal, impossible_disposal)
+        * Section 2: Package size changes
+            - package_size_changed + storage/delivery sub-answers,
+              confirmations and comments (WL/DL)
+        * Section 3: Package capacity changes
+            - package_capacity_changed + storage/delivery sub-answers,
+              confirmations and comments (WL/DL)
+        * Section 4: Installation station changes
+            - station_changed + station_delivery_adjustment + confirmed + comment (DL)
+        * Section 5: Personnel and equipment load
+            - staff_change_wl / staff_change_dl (free text)
+            - equipment_change_wl / equipment_change_dl (free text)
+    - checklist_status: not_started | in_progress | completed
+    - checklist_completed_at / checklist_completed_by_user_id filled on completion
+    - All answer fields nullable: NULL means "not answered yet"
+    - "confirmed" flags default False (task not done yet)
 
 IMPLEMENTATION FEATURES:
     - UUID format: 32 hexadecimal characters + 4 hyphens = 36 characters total
     - Automatic ID generation with prefixes:
-        SUP_, PRT_, BOX_, PLT_, MDL_, CFG_, WSP_, LNE_, BPT_,
-        ENG_, TRN_, DEP_, ROL_, USR_, PLN_, PLD_
+        SUP_, PRT_, BOX_, PLT_, MDL_, CFG_, TRN_, CLR_, WSP_, LNE_, BPT_,
+        BCH_, CHK_, ENG_, DEP_, ROL_, USR_, PLN_, PLD_
     - All ID fields use format: PREFIX_ + UUID = 40 characters total
     - Business rule validation through CheckConstraint:
         * Positive values for dimensions, weights, quantities
@@ -185,12 +258,18 @@ IMPLEMENTATION FEATURES:
 RELATIONSHIP STRUCTURE:
     - Supplier (1) ↔ (N) Part (N) ↔ (N) Box (N) ↔ (N) Pallet
     - Part (N) ↔ (N) Model (with Configuration)
+    - Part (N) ↔ (N) Color
     - Part (N) ↔ (N) Line (N) ↔ (1) Workshop
-    - Part (N) ↔ (N) Breakpoint (change history) with model-specific versions
-    - Each PartToBreakpoint links new_part and old_part versions for a specific model
+    - Part (N) ↔ (N) Breakpoint (change history) with model+configuration versions
+    - Breakpoint (1) ↔ (1) BreakpointChecklist (checklist answers, cascade delete)
+    - Each PartToBreakpoint links new_part and old_part versions for a specific
+      model and configuration
     - Configuration (1) ↔ (N) PartToModel (N) ↔ (1) Model
     - Configuration (N) ↔ (N) Transmission (via configuration_to_transmission)
     - Model (1) ↔ (N) PartToBreakpoint (N) ↔ (1) Part (model-specific changes)
+    - Model (1) ↔ (N) BatchToVehicle (N) ↔ (1) Configuration
+    - Model (1) ↔ (N) BatchToVehicle (N) ↔ (1) Transmission
+    - Model (1) ↔ (N) BatchToVehicle (N) ↔ (1) Engine
     - Supplier (1) ↔ (N) PartToBreakpoint (supplier change history)
     - Line (1) ↔ (N) PartToBreakpoint (line change history)
     - Department (1) ↔ (N) User (N) ↔ (1) UserRole
@@ -201,15 +280,18 @@ RELATIONSHIP STRUCTURE:
     - ProductionPlan (1) ↔ (N) ProductionPlanDay
 
 CHANGE TRACKING (PartToBreakpoint):
-    - Composite PK: (new_part_id, old_part_id, breakpoint_id, model_id)
+    - Composite PK: (new_part_id, old_part_id, breakpoint_id, model_id,
+      configuration_id)
     - new_part_id/old_part_id: References part_data versions
     - breakpoint_id: References breakpoint_data
     - model_id: References model_data (model-specific change)
+    - configuration_id: References configuration_data (configuration-specific change)
     - Type of change determined by presence of IDs:
         * ADD: new_part_id NOT NULL, old_part_id NULL
         * DELETE: new_part_id NULL, old_part_id NOT NULL
         * UPDATE: new_part_id = old_part_id
         * REPLACE: Two records per breakpoint
+    - Additional attributes: interchangeable, production_part_disposal, stock_*
 
 DATABASE CONSTRAINTS SUMMARY:
     - Check Constraints:
@@ -230,13 +312,18 @@ DATABASE CONSTRAINTS SUMMARY:
         * part_number
         * (box_type, box_length_mm, box_width_mm, box_height_mm) on box_data
         * (pallet_type, pallet_length_mm, pallet_width_mm, pallet_height_mm) on pallet_data
-        * bom_product, model_code, model_name on model_data
+        * bom_product (removed in v2.0 — multiple model_code per BOM allowed)
+        * model_code, model_name on model_data
         * configuration on configuration_data
+        * transmission on transmission_data
+        * color_code, color_name on color_data
         * engine_code on engine_data
-        * transmission_code on transmission_data
         * workshop_code, workshop_name on workshop_data
         * line_code on line_data
         * breakpoint_number on breakpoint_data
+        * breakpoint_id on breakpoint_checklist_data (one-to-one)
+        * batch_code on batch_data
+        * (new_part_id, breakpoint_id, model_id, configuration_id) on part_to_breakpoint
         * department_code, department_name on department_data
         * role_code, role_name, pg_role_name on user_role_data
         * username, email on user_data
@@ -244,12 +331,13 @@ DATABASE CONSTRAINTS SUMMARY:
     - NOT UNIQUE by design:
         * production_plan_data.batch (may repeat across records)
         * production_plan_data.(batch, batch_date) (may repeat within a day)
+        * model_data.bom_product (one BOM may have several model variants)
 
-Version: 1.0.0
+Version: 2.0.0
 Compatibility: Python 3.14.4+, SQLAlchemy 1.4.54+, PostgreSQL 12+
 Maintainer: PLD Engineering Center
 Created: 2026-01-16
-Last Modified: 2026-11-02
+Last Modified: 2026-11-10
 License: MIT
 Status: Production
 """
@@ -589,6 +677,12 @@ class PartData(Base):
     )
     box_pallet_combinations = relationship(
         'BoxToPallet',
+        back_populates='part',
+        lazy='selectin',
+        cascade='all, delete-orphan'
+    )
+    colors = relationship(
+        'PartToColor',
         back_populates='part',
         lazy='selectin',
         cascade='all, delete-orphan'
@@ -1072,6 +1166,7 @@ class ModelData(Base):
     __table_args__ = (
         Index('idx_model_code', 'model_code'),
         Index('idx_model_name', 'model_name'),
+        Index('idx_model_bom_product', 'bom_product'),
         {
             'comment': """
             PURPOSE: Vehicle model master data
@@ -1105,7 +1200,6 @@ class ModelData(Base):
     )
     bom_product = Column(
         BOM_PRODUCT_ENUM,
-        unique=True,
         nullable=False
         )
     model_code = Column(
@@ -1115,7 +1209,6 @@ class ModelData(Base):
     )
     model_name = Column(
         MODEL_NAMES_ENUM,
-        unique=True,
         nullable=False
     )
     # Audit fields
@@ -1153,6 +1246,11 @@ class ModelData(Base):
     )
     production_plans = relationship(
         'ProductionPlanData',
+        back_populates='model',
+        lazy='select'
+    )
+    batch_vehicles = relationship(
+        'BatchToVehicle',
         back_populates='model',
         lazy='select'
     )
@@ -1253,6 +1351,16 @@ class ConfigurationData(Base):
     )
     production_plans = relationship(
         'ProductionPlanData',
+        back_populates='configuration',
+        lazy='select'
+    )
+    breakpoint_changes = relationship(
+        'PartToBreakpoint',
+        back_populates='configuration',
+        lazy='select'
+    )
+    batch_vehicles = relationship(
+        'BatchToVehicle',
         back_populates='configuration',
         lazy='select'
     )
@@ -1379,6 +1487,11 @@ class EngineData(Base):
         back_populates='engine',
         lazy='select'
     )
+    batch_vehicles = relationship(
+        'BatchToVehicle',
+        back_populates='engine',
+        lazy='select'
+    )
     created_by = relationship(
         'UserData',
         foreign_keys=[created_by_user_id],
@@ -1397,15 +1510,14 @@ class TransmissionData(Base):
     '''
     __tablename__ = 'transmission_data'
     __table_args__ = (
-        Index('idx_transmission_code', 'transmission_code'),
+        Index('idx_transmission', 'transmission'),
         {
             'comment': """
             PURPOSE: Transmission / drivetrain master data
             ---
             COLUMN DESCRIPTION:
             - transmission_id: Unique system identifier (TRN_ + 36-character UUID)
-            - transmission_code: Transmission code (4x4, 4x2, no data)
-            - transmission_name: Human-readable name
+            - transmission: Transmission code (4x4, 4x2, no data)
             - drive_type: Drivetrain type (full-time, part-time, on-demand)
             - is_active: Soft-disable flag
             ---
@@ -1438,15 +1550,11 @@ class TransmissionData(Base):
         unique=True,
         nullable=False
     )
-    transmission_code = Column(
+    transmission = Column(
         String(20),
         unique=True,
         nullable=False,
-        comment="Transmission code (e.g. 4x4, 4x2, no data)"
-    )
-    transmission_name = Column(
-        String(100),
-        nullable=True
+        comment="Transmission (e.g. 4x4, 4x2, no data)"
     )
     is_active = Column(
         Boolean,
@@ -1485,6 +1593,199 @@ class TransmissionData(Base):
         'ProductionPlanData',
         back_populates='transmission',
         lazy='select'
+    )
+    batch_vehicles = relationship(
+        'BatchToVehicle',
+        back_populates='transmission',
+        lazy='select'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select'
+    )
+
+
+class BatchData(Base):
+    '''
+    Model defines a table for storing production batch master data.
+    '''
+    __tablename__ = 'batch_data'
+    __table_args__ = (
+        Index('idx_batch_code', 'batch_code'),
+        {
+            'comment': """
+            PURPOSE: Production batch master data (from configuration Excel)
+            ---
+            COLUMN DESCRIPTION:
+            - batch_id: Unique system identifier (BCH_ + 36-character UUID)
+            - batch_code: Batch code from Excel (letters only: RAS, RAN, ...).
+              Unique across the whole table.
+            - quantity_vehicle_in_batch: Total number of vehicles in the batch
+              (independent of how they are split across variants)
+            ---
+            RELATIONSHIPS:
+            - One batch has one or more allowed vehicle combinations
+              (1:N with BatchToVehicle)
+            ---
+            BUSINESS RULES:
+            - batch_code is UNIQUE (e.g. RAS always denotes the same variant)
+            - The full sequence (RAS2026, RAS2027, ...) is generated externally
+              and is NOT stored here
+            - One batch may be produced in several vehicle combinations
+              (e.g. RAS with GW4B15D and with GW4B15L)
+            - quantity_vehicle_in_batch is the total for the whole batch,
+              not per combination
+            ---
+            AUDIT:
+            - created_at, updated_at, created_by_user_id, updated_by_user_id
+            """
+        },
+    )
+    batch_id = Column(
+        String(40),
+        primary_key=True,
+        server_default=text("'BCH_' || gen_random_uuid()::text"),
+        unique=True,
+        nullable=False
+    )
+    batch_code = Column(
+        String(20),
+        unique=True,
+        nullable=False,
+        comment="Batch code from Excel (letters only: RAS, RAN, ...)"
+    )
+    quantity_vehicle_in_batch = Column(
+        Integer,
+        nullable=True,
+        comment="Total number of vehicles in the batch (independent of variant split)"
+    )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    # Relationships
+    vehicles = relationship(
+        'BatchToVehicle',
+        back_populates='batch',
+        lazy='selectin',
+        cascade='all, delete-orphan'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select'
+    )
+
+
+class ColorData(Base):
+    '''
+    Model defines a table for storing color master data.
+    '''
+    __tablename__ = 'color_data'
+    __table_args__ = (
+        Index('idx_color_code', 'color_code'),
+        Index('idx_color_name', 'color_name'),
+        {
+            'comment': """
+            PURPOSE: Color master data for automotive parts
+            ---
+            COLUMN DESCRIPTION:
+            - color_id: Unique system identifier (CLR_ + 36-character UUID)
+            - color_code: Business color code (from Excel COLOR_CODE)
+            - color_name: Human-readable color name (from Excel COLOR_NAME)
+            ---
+            RELATIONSHIPS:
+            - Many-to-Many with: PartData (via part_to_color)
+            ---
+            BUSINESS RULES:
+            - color_code is unique (business key)
+            - color_name is unique (prevents duplicate human-readable names)
+            - Color is an INDEPENDENT dimension, not an attribute of PartData
+              (one part may exist in several colors)
+            - Color is linked to PartData via M:N (part_to_color)
+            - In the BP pipeline only the AFTER part provides color
+              (the BEFORE part has no color yet; the DB accumulates colors over time)
+            ---
+            AUDIT:
+            - created_at: When the record was created
+            - updated_at: When the record was last updated
+            - created_by_user_id: User who created the record
+            - updated_by_user_id: User who last updated the record
+            """
+        },
+    )
+    color_id = Column(
+        String(40),
+        primary_key=True,
+        server_default=text("'CLR_' || gen_random_uuid()::text"),
+        unique=True,
+        nullable=False
+    )
+    color_code = Column(
+        String(50),
+        unique=True,
+        nullable=False
+    )
+    color_name = Column(
+        String(200),
+        unique=True,
+        nullable=False
+    )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    # Relationships
+    parts = relationship(
+        'PartToColor',
+        back_populates='color',
+        lazy='selectin',
+        cascade='all, delete-orphan'
     )
     created_by = relationship(
         'UserData',
@@ -1709,6 +2010,7 @@ class BreakpointData(Base):
         Index('idx_breakpoint_created_at', 'created_at'),
         Index('idx_breakpoint_batch_plan', 'batch_plan'),
         Index('idx_breakpoint_batch_fact', 'batch_fact'),
+        Index('idx_breakpoint_batch_feedback', 'batch_feedback'),
         Index('idx_breakpoint_domain', 'change_domain'),
         Index('idx_breakpoint_nature', 'change_nature'),
         Index('idx_breakpoint_domain_nature', 'change_domain', 'change_nature'),
@@ -1723,10 +2025,12 @@ class BreakpointData(Base):
             - breakpoint_date: When change takes effect
             - batch_plan: Planned batch number
             - batch_fact: Real batch number
+            - batch_feedback: Feedback on the batch (from Excel)
             - description: Cause description (from Excel)
             - solution: Solution description (from Excel)
             - change_domain: WHAT changed (supplier, packaging, production, spec, config, multi)
             - change_nature: WHY it changed (business, technical, correction)
+            - comments: Free-text comments (from Excel)
             ---
             AUDIT:
             - created_at: When the record was created
@@ -1776,6 +2080,10 @@ class BreakpointData(Base):
         String(10),
         nullable=True
     )
+    batch_feedback = Column(
+        String(100),
+        nullable=True
+    )
     breakpoint_date = Column(
         DateTime(),
         nullable=False
@@ -1785,6 +2093,10 @@ class BreakpointData(Base):
         nullable=True
     )
     solution = Column(
+        Text,
+        nullable=True
+    )
+    comments = Column(
         Text,
         nullable=True
     )
@@ -1835,6 +2147,385 @@ class BreakpointData(Base):
         'PartToModel',
         foreign_keys='PartToModel.deactivated_by_breakpoint_id',
         back_populates='deactivation_breakpoint',
+        lazy='select'
+    )
+    checklist = relationship(
+        'BreakpointChecklistData',
+        back_populates='breakpoint',
+        uselist=False,
+        lazy='joined',
+        cascade='all, delete-orphan'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select'
+    )
+
+
+class BreakpointChecklistData(Base):
+    '''
+    Model defines a table for storing breakpoint checklist answers.
+
+    One-to-one with BreakpointData: one breakpoint has at most one checklist.
+    Checklist workflow: not_started → in_progress → completed.
+    '''
+    __tablename__ = 'breakpoint_checklist_data'
+    __table_args__ = (
+        Index('idx_checklist_status', 'checklist_status'),
+        Index('idx_checklist_completed_at', 'checklist_completed_at'),
+        {
+            'comment': """
+            PURPOSE: Interactive checklist for breakpoint switching activities
+            ---
+            STRUCTURE (5 sections mirroring bp_data_table.html):
+            - Section 1: Part number changes (BOM, stock remains, disposal)
+            - Section 2: Package size changes (storage + delivery)
+            - Section 3: Package capacity changes (storage + delivery)
+            - Section 4: Installation station changes (delivery)
+            - Section 5: Personnel and equipment load (WL/DL free text)
+            ---
+            SECTION 1 — PART NUMBER CHANGES:
+            - part_number_changed: main answer (yes/no)
+            - bom_*: BOM replacement/add/delete flags + confirmation + comment
+            - stock_*_has_remains: whether old parts remain in each stock location
+              (stock_*_completed: user finished filling data for this location)
+              Actual quantities are stored in PartToBreakpoint.stock_* fields
+            - disposal_*: disposal strategy questions (localization,
+              checklist_interchangeable, require_disposal, impossible_disposal)
+            ---
+            SECTION 2-3 — PACKAGE CHANGES:
+            - *_changed: main answer (yes/no)
+            - *_storage_adjustment / *_delivery_adjustment: sub-answers (yes/no)
+            - *_storage_confirmed / *_delivery_confirmed: task completed flags
+            - *_storage_comment / *_delivery_comment: free-text notes (WL/DL)
+            ---
+            SECTION 4 — STATION CHANGES:
+            - station_changed: main answer (yes/no)
+            - station_delivery_adjustment + confirmed + comment
+            ---
+            SECTION 5 — PERSONNEL AND EQUIPMENT:
+            - staff_change_wl / staff_change_dl: free-text answers
+            - equipment_change_wl / equipment_change_dl: free-text answers
+            ---
+            BUSINESS RULES:
+            - checklist_status: not_started | in_progress | completed
+            - checklist_completed_at filled when status -> completed
+            - checklist_completed_by_user_id references UserData
+            - All answer fields nullable: NULL means "not answered yet"
+            - "confirmed" flags default False (task not done yet)
+            ---
+            AUDIT:
+            - created_at, updated_at, created_by_user_id, updated_by_user_id
+            """
+        },
+    )
+    checklist_id = Column(
+        String(40),
+        primary_key=True,
+        server_default=text("'CHK_' || gen_random_uuid()::text"),
+        unique=True,
+        nullable=False
+    )
+    breakpoint_id = Column(
+        String(40),
+        ForeignKey('breakpoint_data.breakpoint_id', ondelete='CASCADE'),
+        nullable=False,
+        unique=True,
+        comment="One-to-one with BreakpointData"
+    )
+
+    # ========== SECTION 1: PART NUMBER CHANGES ==========
+    part_number_changed = Column(
+        Boolean, nullable=True,
+        comment="Section 1 main: did part number change? (NULL = not answered)"
+    )
+    # 1.1 BOM changes (DM)
+    bom_replaced_parts = Column(
+        Boolean, nullable=True,
+        comment="Were old parts replaced with new in BOM? (DM)"
+    )
+    bom_replaced_parts_confirmed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="Task 'replace parts in BOM' confirmed"
+    )
+    bom_replaced_parts_comment = Column(
+        Text, nullable=True,
+        comment="DM comment for BOM replacement"
+    )
+    bom_new_parts = Column(
+        Boolean, nullable=True,
+        comment="Were completely new parts added to BOM? (DM)"
+    )
+    bom_new_parts_confirmed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="Task 'add new parts to BOM' confirmed"
+    )
+    bom_new_parts_comment = Column(
+        Text, nullable=True,
+        comment="DM comment for BOM additions"
+    )
+    bom_old_parts = Column(
+        Boolean, nullable=True,
+        comment="Were old parts deleted from BOM without replacement? (DM)"
+    )
+    bom_old_parts_confirmed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="Task 'delete old parts from BOM' confirmed"
+    )
+    bom_old_parts_comment = Column(
+        Text, nullable=True,
+        comment="DM comment for BOM deletions"
+    )
+    # 1.2 Stock remains (per location: has_remains + completed)
+    # Actual quantities are in PartToBreakpoint.stock_* (per part pair)
+    stock_1001_has_remains = Column(
+        Boolean, nullable=True,
+        comment="Are there old parts in stock 1001 (in transit)?"
+    )
+    stock_1001_completed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="User finished entering data for stock 1001"
+    )
+    stock_1002_has_remains = Column(
+        Boolean, nullable=True,
+        comment="Are there old parts in stock 1002 (container terminal)?"
+    )
+    stock_1002_completed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="User finished entering data for stock 1002"
+    )
+    stock_1003_has_remains = Column(
+        Boolean, nullable=True,
+        comment="Are there old parts in stock 1003 (central warehouse)?"
+    )
+    stock_1003_completed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="User finished entering data for stock 1003"
+    )
+    stock_1005_has_remains = Column(
+        Boolean, nullable=True,
+        comment="Are there old parts in stock 1005 (safety stock in containers)?"
+    )
+    stock_1005_completed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="User finished entering data for stock 1005"
+    )
+    stock_1604_has_remains = Column(
+        Boolean, nullable=True,
+        comment="Are there old parts in stock 1604 (defective parts)?"
+    )
+    stock_1604_completed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="User finished entering data for stock 1604"
+    )
+    stock_3029_has_remains = Column(
+        Boolean, nullable=True,
+        comment="Are there old parts in stock 3029 (safety stock on racks)?"
+    )
+    stock_3029_completed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="User finished entering data for stock 3029"
+    )
+    stock_assembly_kit_has_remains = Column(
+        Boolean, nullable=True,
+        comment="Are there old parts in assembly kitting zone?"
+    )
+    stock_assembly_kit_completed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="User finished entering data for assembly kitting zone"
+    )
+    stock_welding_kit_has_remains = Column(
+        Boolean, nullable=True,
+        comment="Are there old parts in welding kitting zone?"
+    )
+    stock_welding_kit_completed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="User finished entering data for welding kitting zone"
+    )
+    stock_assembly_buffer_has_remains = Column(
+        Boolean, nullable=True,
+        comment="Are there old parts in assembly delivery buffer?"
+    )
+    stock_assembly_buffer_completed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="User finished entering data for assembly delivery buffer"
+    )
+    stock_welding_buffer_has_remains = Column(
+        Boolean, nullable=True,
+        comment="Are there old parts in welding delivery buffer?"
+    )
+    stock_welding_buffer_completed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="User finished entering data for welding delivery buffer"
+    )
+    # 1.3 Disposal of old parts
+    disposal_by_localization = Column(
+        Boolean, nullable=True,
+        comment="Was the switch due to localization?"
+    )
+    checklist_interchangeable = Column(
+        Boolean, nullable=True,
+        comment="Are old and new parts interchangeable? (checklist-level decision; "
+                "per-part-pair value lives in PartToBreakpoint.interchangeable)"
+    )
+    require_disposal = Column(
+        Boolean, nullable=True,
+        comment="Is disposal of old parts required?"
+    )
+    impossible_disposal = Column(
+        Boolean, nullable=True,
+        comment="Are there old parts whose disposal is impossible?"
+    )
+
+    # ========== SECTION 2: PACKAGE SIZE CHANGES ==========
+    package_size_changed = Column(
+        Boolean, nullable=True,
+        comment="Section 2 main: did package size change?"
+    )
+    package_size_storage_adjustment = Column(
+        Boolean, nullable=True,
+        comment="Is storage location adjustment required? (WL)"
+    )
+    package_size_storage_confirmed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="Storage adjustment task confirmed"
+    )
+    package_size_storage_comment = Column(
+        Text, nullable=True,
+        comment="WL comment for storage adjustment"
+    )
+    package_size_delivery_adjustment = Column(
+        Boolean, nullable=True,
+        comment="Is delivery process adjustment required? (DL)"
+    )
+    package_size_delivery_confirmed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="Delivery adjustment task confirmed"
+    )
+    package_size_delivery_comment = Column(
+        Text, nullable=True,
+        comment="DL comment for delivery adjustment"
+    )
+
+    # ========== SECTION 3: PACKAGE CAPACITY CHANGES ==========
+    package_capacity_changed = Column(
+        Boolean, nullable=True,
+        comment="Section 3 main: did package capacity change?"
+    )
+    package_capacity_storage_adjustment = Column(
+        Boolean, nullable=True,
+        comment="Is storage location adjustment required? (WL)"
+    )
+    package_capacity_storage_confirmed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="Storage adjustment task confirmed"
+    )
+    package_capacity_storage_comment = Column(
+        Text, nullable=True,
+        comment="WL comment for storage adjustment"
+    )
+    package_capacity_delivery_adjustment = Column(
+        Boolean, nullable=True,
+        comment="Is delivery process adjustment required? (DL)"
+    )
+    package_capacity_delivery_confirmed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="Delivery adjustment task confirmed"
+    )
+    package_capacity_delivery_comment = Column(
+        Text, nullable=True,
+        comment="DL comment for delivery adjustment"
+    )
+
+    # ========== SECTION 4: INSTALLATION STATION CHANGES ==========
+    station_changed = Column(
+        Boolean, nullable=True,
+        comment="Section 4 main: did installation station change?"
+    )
+    station_delivery_adjustment = Column(
+        Boolean, nullable=True,
+        comment="Is delivery process adjustment required? (DL)"
+    )
+    station_delivery_confirmed = Column(
+        Boolean, nullable=False, default=False, server_default=text('false'),
+        comment="Delivery adjustment task confirmed"
+    )
+    station_delivery_comment = Column(
+        Text, nullable=True,
+        comment="DL comment for delivery adjustment"
+    )
+
+    # ========== SECTION 5: PERSONNEL AND EQUIPMENT ==========
+    staff_change_wl = Column(
+        Text, nullable=True,
+        comment="Free-text answer: staff load change (WL)"
+    )
+    staff_change_dl = Column(
+        Text, nullable=True,
+        comment="Free-text answer: staff load change (DL)"
+    )
+    equipment_change_wl = Column(
+        Text, nullable=True,
+        comment="Free-text answer: equipment load change (WL)"
+    )
+    equipment_change_dl = Column(
+        Text, nullable=True,
+        comment="Free-text answer: equipment load change (DL)"
+    )
+
+    # ========== WORKFLOW ==========
+    checklist_status = Column(
+        String(20),
+        nullable=False,
+        default='not_started',
+        server_default=text("'not_started'"),
+        comment="Checklist workflow status: not_started | in_progress | completed"
+    )
+    checklist_completed_at = Column(
+        DateTime,
+        nullable=True,
+        comment="When the checklist was marked as completed"
+    )
+    checklist_completed_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True,
+        comment="User who marked the checklist as completed"
+    )
+
+    # ========== AUDIT ==========
+    created_at = Column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at = Column(
+        DateTime, nullable=True, onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+
+    # ========== RELATIONSHIPS ==========
+    breakpoint = relationship(
+        'BreakpointData',
+        back_populates='checklist',
+        lazy='joined'
+    )
+    checklist_completed_by = relationship(
+        'UserData',
+        foreign_keys=[checklist_completed_by_user_id],
         lazy='select'
     )
     created_by = relationship(
@@ -2740,6 +3431,56 @@ class PartToModel(Base):
         return None
 
 
+class PartToColor(Base):
+    '''
+    Junction table used to organize many-to-many relationships
+    between two main entities: PartData and ColorData.
+    '''
+    __tablename__ = 'part_to_color'
+    __table_args__ = (
+        Index('idx_ptc_part_id', 'part_id'),
+        Index('idx_ptc_color_id', 'color_id'),
+        Index('idx_ptc_composite', 'part_id', 'color_id'),
+        {
+            'comment': """
+            PURPOSE: Many-to-many relationship: Parts ↔ Colors
+            ---
+            COLUMN DESCRIPTION:
+            - part_id: References part_data
+            - color_id: References color_data
+            ---
+            BUSINESS RULES:
+            - One part may exist in several colors
+            - One color may apply to several parts
+            - In the BP pipeline the color is taken from the AFTER part
+              (COLOR_CODE/COLOR_NAME in PART_AFTER_COLS)
+            - The BEFORE part has no color data (logist doesn't know it),
+              so only the AFTER side contributes to ColorData
+            """
+        },
+    )
+    part_id = Column(
+        String(40),
+        ForeignKey('part_data.part_id', ondelete='CASCADE'),
+        primary_key=True
+    )
+    color_id = Column(
+        String(40),
+        ForeignKey('color_data.color_id', ondelete='RESTRICT'),
+        primary_key=True,
+        comment="The color cannot be removed if it is used by parts!"
+    )
+    # Relationships
+    part = relationship(
+        'PartData',
+        back_populates='colors'
+    )
+    color = relationship(
+        'ColorData',
+        back_populates='parts'
+    )
+
+
 class PartToLine(Base):
     '''
     Junction table used to organize many-to-many relationships
@@ -2797,25 +3538,48 @@ class PartToBreakpoint(Base):
         Index('idx_ptbkp_old_part', 'old_part_id'),
         Index('idx_ptbkp_breakpoint', 'breakpoint_id'),
         Index('idx_ptbkp_model', 'model_id'),
+        Index('idx_ptbkp_configuration', 'configuration_id'),
         Index('idx_ptbkp_model_breakpoint', 'model_id', 'breakpoint_id'),
-        UniqueConstraint('new_part_id', 'breakpoint_id', 'model_id',
-                         name='uq_ptbkp_unique'),
+        UniqueConstraint(
+            'new_part_id', 'breakpoint_id', 'model_id', 'configuration_id',
+            name='uq_ptbkp_unique'
+        ),
         {
             'comment': """
             PURPOSE: Links part versions through technical changes (breakpoints)
             ---
             COLUMN DESCRIPTION:
             - new_part_id: New/current version of the part (references part_data)
-            - old_part_id: Previous version of the part (references part_data)  
+            - old_part_id: Previous version of the part (references part_data)
             - breakpoint_id: Technical change that caused this version transition
             - model_id: Model this change applies to (CRITICAL for universal parts)
+            - configuration_id: Configuration this change applies to
+            - interchangeable: Free-form status from Excel ('yes', 'no',
+              "new can replace old, but old can't replace new", ...)
+            - production_part_disposal: Whether old part can still be used in production
+            - stock_1001: Parts in transit (checklist snapshot)
+            - stock_1002: Parts at container terminal (checklist snapshot)
+            - stock_1003: Central warehouse (checklist snapshot)
+            - stock_1005: Safety stock in containers (checklist snapshot)
+            - stock_1604: Defective parts (checklist snapshot)
+            - stock_3029: Safety stock on racks (checklist snapshot)
+            - stock_assembly_kit: old parts remains in assembly kitting zone
+            - stock_welding_kit: old parts remains in welding kitting zone
+            - stock_assembly_buffer: old parts remains in assembly delivery buffer
+            - stock_welding_buffer: old parts remains in welding delivery buffer
+              Maps from Excel QUANTITY_PARTS_IN_SS
             ---
             BUSINESS RULES:
-            - A breakpoint ALWAYS applies to a specific model
-            - Universal parts have multiple PartToBreakpoint records (one per model)
+            - A breakpoint ALWAYS applies to a specific model AND configuration
+            - Universal parts have multiple PartToBreakpoint records
+              (one per model+configuration)
             - Part is fully deactivated only when ALL model associations are inactive
             - All part data (including all relationships) is stored in part_data
             - All information accessed through part_data relationships
+            - stock_* snapshot is filled by BP pipeline (from Excel) or by
+              interactive monitoring checklist (breakpoint_refactoring_api.py)
+            - Numeric(12, 3) for stock_* supports both discrete parts (pcs)
+              and bulk materials (kg, l)
             """
         },
     )
@@ -2845,6 +3609,78 @@ class PartToBreakpoint(Base):
         primary_key=True,
         comment="Model this change applies to (must match PartToModel.model_id)"
     )
+    configuration_id = Column(
+        String(40),
+        ForeignKey('configuration_data.configuration_id', ondelete='RESTRICT'),
+        primary_key=True,
+        nullable=False,
+        comment="Vehicle configuration this change applies to"
+    )
+    # Change attributes (from BP Excel)
+    interchangeable = Column(
+        String(40),
+        nullable=True,
+        comment="Interchangeability status from Excel (free-form: 'yes', 'no', "
+                "'new can replace old, but old can't replace new', ...)"
+    )
+    production_part_disposal = Column(
+        String(40),
+        nullable=True,
+        comment="Whether old part can still be used in production"
+    )
+    # Stock snapshot (from BP Excel + monitoring checklist)
+    # Numeric(12, 3): supports both discrete parts (pcs) and bulk materials (kg, l)
+    stock_1001 = Column(
+        Numeric(12, 3),
+        nullable=True,
+        comment="Parts in transit (checklist snapshot)"
+    )
+    stock_1002 = Column(
+        Numeric(12, 3),
+        nullable=True,
+        comment="Parts at container terminal (checklist snapshot)"
+    )
+    stock_1003 = Column(
+        Numeric(12, 3),
+        nullable=True,
+        comment="Central warehouse (checklist snapshot)"
+    )
+    stock_1005 = Column(
+        Numeric(12, 3),
+        nullable=True,
+        comment="Safety stock in containers (checklist snapshot)"
+    )
+    stock_1604 = Column(
+        Numeric(12, 3),
+        nullable=True,
+        comment="Defective parts (checklist snapshot)"
+    )
+    stock_3029 = Column(
+        Numeric(12, 3),
+        nullable=True,
+        comment="Safety stock on racks (checklist snapshot). "
+                "Maps from Excel QUANTITY_PARTS_IN_SS."
+    )
+    stock_assembly_kit = Column(
+        Numeric(12, 3),
+        nullable=True,
+        comment="Assembly kitting zone — old parts remains (checklist snapshot)"
+    )
+    stock_welding_kit = Column(
+        Numeric(12, 3),
+        nullable=True,
+        comment="Welding kitting zone — old parts remains (checklist snapshot)"
+    )
+    stock_assembly_buffer = Column(
+        Numeric(12, 3),
+        nullable=True,
+        comment="Assembly delivery buffer — old parts remains (checklist snapshot)"
+    )
+    stock_welding_buffer = Column(
+        Numeric(12, 3),
+        nullable=True,
+        comment="Welding delivery buffer — old parts remains (checklist snapshot)"
+    )
     # Relationships
     new_part = relationship(
         'PartData',
@@ -2866,6 +3702,11 @@ class PartToBreakpoint(Base):
     model = relationship(
         'ModelData',
         foreign_keys=[model_id],
+        lazy='joined'
+    )
+    configuration = relationship(
+        'ConfigurationData',
+        back_populates='breakpoint_changes',
         lazy='joined'
     )
 
@@ -2930,6 +3771,88 @@ class BoxToPallet(Base):
     pallet = relationship(
         'PalletData',
         back_populates='boxes'
+    )
+
+
+class BatchToVehicle(Base):
+    '''
+    Junction table defining which vehicle combinations a production batch
+    can be built in.
+    '''
+    __tablename__ = 'batch_to_vehicle'
+    __table_args__ = (
+        Index('idx_btv_batch', 'batch_id'),
+        Index('idx_btv_model', 'model_id'),
+        Index('idx_btv_configuration', 'configuration_id'),
+        Index('idx_btv_transmission', 'transmission_id'),
+        Index('idx_btv_engine', 'engine_id'),
+        {
+            'comment': """
+            PURPOSE: Allowed vehicle combinations for a batch
+            ---
+            COLUMN DESCRIPTION:
+            - batch_id: References batch_data
+            - model_id: References model_data
+            - configuration_id: References configuration_data
+            - transmission_id: References transmission_data
+            - engine_id: References engine_data
+            ---
+            BUSINESS RULES:
+            - One batch may be produced in several combinations
+              (e.g. RAS with GW4B15D and with GW4B15L)
+            - The set (model, configuration, transmission, engine) describes
+              exactly one vehicle variant of the batch
+            - ModelData identifies the variant via (bom_product, model_code)
+            - No per-combination quantities are stored here: Excel only
+              provides the total batch quantity in BatchData
+            """
+        },
+    )
+    batch_id = Column(
+        String(40),
+        ForeignKey('batch_data.batch_id', ondelete='CASCADE'),
+        primary_key=True
+    )
+    model_id = Column(
+        String(40),
+        ForeignKey('model_data.model_id', ondelete='RESTRICT'),
+        primary_key=True
+    )
+    configuration_id = Column(
+        String(40),
+        ForeignKey('configuration_data.configuration_id', ondelete='RESTRICT'),
+        primary_key=True
+    )
+    transmission_id = Column(
+        String(40),
+        ForeignKey('transmission_data.transmission_id', ondelete='RESTRICT'),
+        primary_key=True
+    )
+    engine_id = Column(
+        String(40),
+        ForeignKey('engine_data.engine_id', ondelete='RESTRICT'),
+        primary_key=True
+    )
+    # Relationships
+    batch = relationship(
+        'BatchData',
+        back_populates='vehicles'
+    )
+    model = relationship(
+        'ModelData',
+        back_populates='batch_vehicles'
+    )
+    configuration = relationship(
+        'ConfigurationData',
+        back_populates='batch_vehicles'
+    )
+    transmission = relationship(
+        'TransmissionData',
+        back_populates='batch_vehicles'
+    )
+    engine = relationship(
+        'EngineData',
+        back_populates='batch_vehicles'
     )
 
 
