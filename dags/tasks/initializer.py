@@ -151,6 +151,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # Local imports
 from config import get_logger
+from database.audit_triggers import (
+    AUDIT_FUNCTION_DDL,
+    AUDIT_HARDENING_STATEMENTS,
+    AUDIT_SCHEMA_MIGRATIONS,
+    AUDIT_VIEW_HARDENING_STATEMENTS,
+    AUDITED_TABLES,
+)
 from database.database import Base as DatabaseBase
 from database.views import create_views
 from dags.tasks.connector import (
@@ -564,10 +571,48 @@ def initialize_database() -> Optional[Engine]:
             retry_delay=int(os.getenv('DB_RETRY_DELAY', '2')),
         )
 
-        # 4. Create tables from models
+        # 4a. Create tables from models
         logger.info("Creating/verifying tables from models in database.py...")
         created_tables = create_database_tables(engine)
         logger.info("Tables verified: %d", len(created_tables))
+
+        # 4b. Install audit trigger function (SECURITY DEFINER, owned by DB_USER).
+        logger.info("Installing audit trigger function and hardening...")
+        with engine.begin() as conn:
+            # Schema migrations must run before hardening
+            # (hardening classifies roles by current privileges).
+            for stmt in AUDIT_SCHEMA_MIGRATIONS:
+                conn.execute(text(stmt))
+
+            conn.execute(text(AUDIT_FUNCTION_DDL))
+
+            for stmt in AUDIT_HARDENING_STATEMENTS:
+                conn.execute(text(stmt))
+        logger.info("Audit trigger function installed and hardened")
+
+        # 4c. Attach audit trigger to every audited table.
+        #     Idempotent: DROP TRIGGER IF EXISTS before CREATE.
+        #     Table names / pk columns / skip lists come from a hardcoded
+        #     Python list (AUDITED_TABLES) - not user input - so direct
+        #     string formatting here is safe.
+        logger.info(
+            "Installing audit triggers on %d table(s)...",
+            len(AUDITED_TABLES),
+        )
+        with engine.begin() as conn:
+            for table_name, pk_column, extra_skip in AUDITED_TABLES:
+                trigger_name = f"trg_audit_{table_name}"
+                conn.execute(text(
+                    f'DROP TRIGGER IF EXISTS {trigger_name} '
+                    f'ON public.{table_name}'
+                ))
+                conn.execute(text(
+                    f'CREATE TRIGGER {trigger_name} '
+                    f'AFTER INSERT OR UPDATE OR DELETE ON public.{table_name} '
+                    f'FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn('
+                    f"'{pk_column}', '{extra_skip}')"
+                ))
+        logger.info("Audit triggers installed on %d table(s)", len(AUDITED_TABLES))
 
         # 5. Create views (v_active_parts_full, v_part_history, ...)
         logger.info("Creating/verifying database views...")
@@ -579,6 +624,15 @@ def initialize_database() -> Optional[Engine]:
                 "Failed to create views: %s", views_error, exc_info=True
             )
             return None
+
+        # 5b. Post-view hardening: hide audit columns from non-admin roles.
+        #     Must run AFTER create_views: fresh views inherit SELECT via
+        #     ALTER DEFAULT PRIVILEGES, so we revoke and re-grant columns.
+        logger.info("Hardening views (audit column isolation)...")
+        with engine.begin() as conn:
+            for stmt in AUDIT_VIEW_HARDENING_STATEMENTS:
+                conn.execute(text(stmt))
+        logger.info("Views hardened")
 
         # 6. Health check
         if not check_database_health(engine):
