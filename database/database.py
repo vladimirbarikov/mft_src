@@ -309,7 +309,7 @@ DATABASE CONSTRAINTS SUMMARY:
         * production_plan_day_data.actual_quantity >= 0 (or NULL)
     - Unique Constraints:
         * supplier_name
-        * part_number
+        * (part_number, version_number) on part_data
         * (box_type, box_length_mm, box_width_mm, box_height_mm) on box_data
         * (pallet_type, pallet_length_mm, pallet_width_mm, pallet_height_mm) on pallet_data
         * bom_product (removed in v2.0 — multiple model_code per BOM allowed)
@@ -548,6 +548,7 @@ class PartData(Base):
         Index('idx_part_weight', 'part_weight_kg'),
         Index('idx_part_supplier_id', 'supplier_id'),
         Index('idx_part_deactivated', 'deactivated_by_breakpoint_id'),
+        UniqueConstraint('part_number', 'version_number', name='uq_part_number_version'),
         {
             'comment': """
             PURPOSE: Automotive component master data with versioning support
@@ -594,8 +595,9 @@ class PartData(Base):
     )
     part_number = Column(
         String(50),
-        unique=True,
-        nullable=False
+        nullable=False,
+        comment="Business number; not unique — one part_number has many versions "
+                "(uniqueness is enforced on (part_number, version_number))"
     )
     part_name = Column(
         String(100),
@@ -2020,7 +2022,9 @@ class BreakpointData(Base):
             ---
             COLUMN DESCRIPTION:
             - breakpoint_id: Unique system identifier (BPT_ + 36-character UUID)
-            - breakpoint_number: Engineering change identifier (BP-* or MAN-*)
+            - breakpoint_number: Engineering change identifier (VARCHAR(10), no hyphen):
+                * BPYYNNNNNN — automatic (e.g. BP26000000)
+                * MANYYNNNNN — manual     (e.g. MAN2600001)
             - breakpoint_status: Execution status of breakpoint
             - breakpoint_date: When change takes effect
             - batch_plan: Planned batch number
@@ -2043,8 +2047,8 @@ class BreakpointData(Base):
             - Nature: business | technical | correction
             ---
             SOURCES:
-            - Automatic: BP pipeline from Excel (BP-*)
-            - Manual: MFT Modify API (MAN-*)
+            - Automatic: BP pipeline from Excel (BPYYNNNNNN, e.g. BP26000000)
+            - Manual: MFT Modify API (MANYYNNNNN, e.g. MAN2600001)
             ---
             INDEXES:
             - idx_breakpoint_number: For breakpoint lookups
@@ -3265,12 +3269,30 @@ class AuditLogData(Base):
         unique=True,
         nullable=False
     )
-    table_name = Column(String(100), nullable=False)
-    record_id = Column(String(40), nullable=False)
-    field_name = Column(String(100), nullable=False)
-    old_value = Column(Text, nullable=True)
-    new_value = Column(Text, nullable=True)
-    action = Column(String(10), nullable=False) # INSERT, UPDATE, DELETE
+    table_name = Column(
+        String(100),
+        nullable=False
+    )
+    record_id = Column(
+        Text,
+        nullable=False
+    )
+    field_name = Column(
+        String(100),
+        nullable=False
+    )
+    old_value = Column(
+        Text,
+        nullable=True
+    )
+    new_value = Column(
+        Text,
+        nullable=True
+    )
+    action = Column(
+        String(10),
+        nullable=False
+    )
     user_id = Column(
         String(40),
         ForeignKey('user_data.user_id', ondelete='SET NULL'),
@@ -3681,6 +3703,18 @@ class PartToBreakpoint(Base):
         nullable=True,
         comment="Welding delivery buffer — old parts remains (checklist snapshot)"
     )
+    supplier_id = Column(
+        String(40),
+        ForeignKey('supplier_data.supplier_id', ondelete='SET NULL'),
+        nullable=True,
+        comment="Supplier relevant for this change (who supplies the part after the change)"
+    )
+    line_id = Column(
+        String(40),
+        ForeignKey('line_data.line_id', ondelete='SET NULL'),
+        nullable=True,
+        comment="Production line relevant for this change (where the part is installed after the change)"
+    )
     # Relationships
     new_part = relationship(
         'PartData',
@@ -3706,6 +3740,18 @@ class PartToBreakpoint(Base):
     )
     configuration = relationship(
         'ConfigurationData',
+        back_populates='breakpoint_changes',
+        lazy='joined'
+    )
+    supplier = relationship(
+        'SupplierData',
+        foreign_keys=[supplier_id],
+        back_populates='breakpoint_changes',
+        lazy='joined'
+    )
+    line = relationship(
+        'LineData',
+        foreign_keys=[line_id],
         back_populates='breakpoint_changes',
         lazy='joined'
     )
