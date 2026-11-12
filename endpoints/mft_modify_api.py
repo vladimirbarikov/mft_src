@@ -10,10 +10,10 @@ PURPOSE:
     architectural gap where manual changes were not tracked in the history.
 
 KEY FEATURES:
-    1. Virtual Breakpoints (MAN-YYYYMMDD-XXXX):
+    1. Virtual Breakpoints (MANYYNNNNN, e.g. MAN2600001):
         - Each manual change automatically creates a virtual breakpoint
         - Full integration with existing breakpoint architecture
-        - Easy to distinguish from automatic changes (MAN-* vs BP-*)
+        - Easy to distinguish from automatic changes (MANYYNNNNN vs BPYYNNNNNN)
 
     2. Complete History Tracking:
         - Every change (automatic OR manual) has a breakpoint_id
@@ -106,7 +106,7 @@ from pathlib import Path
 import sys
 import os
 from datetime import datetime
-from functools import wraps
+from functools import wraps, lru_cache
 from typing import Dict, Any, Optional, cast
 import zoneinfo
 
@@ -137,7 +137,7 @@ load_dotenv(dotenv_path=env_path)
 
 # Local imports
 from config import get_logger
-from dags.tasks.connector import connect_to_database
+from dags.tasks.connector import connect_to_database, check_connection
 from dags.tasks.change_classifier import ChangeClassifier
 from endpoints.auth import (
     jwt_required,
@@ -399,18 +399,23 @@ class ManualChangeService:
         change_domain: str,
         change_nature: str
     ) -> BreakpointData:
-        """Create a virtual breakpoint for manual changes."""
-        today = datetime.now(MOSCOW_TZ).strftime('%Y%m%d')
+        """Create a virtual breakpoint for manual changes.
+
+        Number format: MANYYNNNNN (MAN + 2-digit year + 5-digit sequence).
+        Matches the schema's String(10) limit and the automatic BP format
+        (BPYYNNNNNN, e.g. BP26000000).
+        """
+        yy = datetime.now(MOSCOW_TZ).strftime('%y')  # '26' for 2026
 
         count_query = text("""
             SELECT COUNT(*)
             FROM breakpoint_data
             WHERE breakpoint_number LIKE :pattern
         """)
-        pattern = f"MAN-{today}-%"
+        pattern = f"MAN{yy}%"
         count = self.session.execute(count_query, {'pattern': pattern}).scalar() or 0
-        seq = str(count + 1).zfill(4)
-        breakpoint_number = f"MAN-{today}-{seq}"
+        seq = str(count + 1).zfill(5)
+        breakpoint_number = f"MAN{yy}{seq}"  # e.g. MAN2600001 — 10 chars
 
         changes_summary = ', '.join([f"{k}={v}" for k, v in changes.items()])
         description = f"""MANUAL CHANGE
@@ -588,7 +593,7 @@ class ManualChangeService:
         )
 
         # 8. Create transition record
-        self._create_transition(new_part_id, old_part_id, bp.breakpoint_id, model_id)
+        self._create_transition(new_part_id, old_part_id, bp.breakpoint_id, model_id, config_id)
 
         logger.info(
             "User %s applied changes to part %s: v%d → v%d (breakpoint: %s)",
@@ -621,15 +626,23 @@ class ManualChangeService:
 
         original_part_id = old_part.original_part_id or old_part_id
 
-        # Get next version number with lock
-        version_query = text("""
-            SELECT COALESCE(MAX(version_number), 0) + 1
-            FROM part_data
-            WHERE original_part_id = :original_part_id
-            FOR UPDATE
-        """)
+        # Serialize concurrent version creation for the same part_number.
+        # pg_advisory_xact_lock is released automatically at COMMIT/ROLLBACK.
+        # Replaces FOR UPDATE (which PostgreSQL forbids together with MAX()).
+        self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {'key': f'part_data_version:{part_number}'}
+        )
+
+        # COALESCE(original_part_id, part_id) covers BOTH cases:
+        #   - v1 (the original): original_part_id IS NULL -> matches via part_id
+        #   - v2+ : original_part_id points at the v1 part_id
         new_version = self.session.execute(
-            version_query,
+            text("""
+                SELECT COALESCE(MAX(version_number), 0) + 1
+                FROM part_data
+                WHERE COALESCE(original_part_id, part_id) = :original_part_id
+            """),
             {'original_part_id': original_part_id}
         ).scalar() or 1
 
@@ -982,23 +995,24 @@ class ManualChangeService:
         new_part_id: str,
         old_part_id: str,
         breakpoint_id: str,
-        model_id: str
+        model_id: str,
+        configuration_id: str,
     ):
-        """Create PartToBreakpoint record."""
         existing = self.session.query(PartToBreakpoint).where(
             PartToBreakpoint.new_part_id == new_part_id,
             PartToBreakpoint.old_part_id == old_part_id,
             PartToBreakpoint.breakpoint_id == breakpoint_id,
-            PartToBreakpoint.model_id == model_id
+            PartToBreakpoint.model_id == model_id,
+            PartToBreakpoint.configuration_id == configuration_id,
         ).first()
 
         if not existing:
-            # Create a PartToBreakpoint object by assigning attributes.
             ptb = PartToBreakpoint()
             ptb.new_part_id = new_part_id
             ptb.old_part_id = old_part_id
             ptb.breakpoint_id = breakpoint_id
             ptb.model_id = model_id
+            ptb.configuration_id = configuration_id
             self.session.add(ptb)
 
     def _ensure_part_to_box(self, part_id: str, box_id: str, part_per_box: Optional[int] = None):
@@ -1057,22 +1071,31 @@ class ManualChangeService:
 # HELPER FUNCTIONS
 # ============================================================================
 
-def get_db_session() -> Session:
+@lru_cache(maxsize=1)
+def get_engine():
     """
-    Get a database session connected to the pre-initialized mft_db.
+    Return the process-wide engine (created lazily, cached).
 
-    The schema is created by the `db_initializer` docker-compose service,
-    not by this API. This function only opens a connection.
-
-    Raises:
-        ConnectionError: If the database is unreachable
-                         (propagated from `connect_to_database()`).
+    Implemented via functools.lru_cache instead of a module-level global:
+      - no `global` statement / no mutable module state
+      - thread-safe (lru_cache is thread-safe since Python 3.2)
+      - exceptions are NOT cached, so retry logic inside
+        connect_to_database() still works on the next call
+      - testable: get_engine.cache_clear() resets in unit tests
     """
-    engine = connect_to_database(
+    return connect_to_database(
         max_retries=int(os.getenv('DB_MAX_RETRIES', '5')),
         retry_delay=int(os.getenv('DB_RETRY_DELAY', '2')),
     )
-    return Session(engine)
+
+
+def get_db_session() -> Session:
+    """
+    Get a database session bound to the process-wide engine.
+    Caller MUST call session.close() in a finally block (returns the
+    connection to the pool; the pool itself is never destroyed).
+    """
+    return Session(get_engine())
 
 
 def handle_api_response(f):
@@ -1582,23 +1605,17 @@ def generate_auth_token():
 
 @modify_bp.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint."""
-    engine = None
+    """Health check endpoint (uses the shared engine)."""
     try:
-        engine = connect_to_database(
-            max_retries=int(os.getenv('DB_MAX_RETRIES', '5')),
-            retry_delay=int(os.getenv('DB_RETRY_DELAY', '2')),
-        )
-        db_status = 'healthy' if engine else 'unhealthy'
-
+        healthy = check_connection(get_engine())
         return {
-            'status': 'healthy' if db_status == 'healthy' else 'degraded',
+            'status': 'healthy' if healthy else 'degraded',
             'service': 'MFT Modify API',
             'version': '1.0.0',
             'timestamp': datetime.now(MOSCOW_TZ).isoformat(),
             'environment': FLASK_ENV,
-            'database': db_status
-        }
+            'database': 'healthy' if healthy else 'unhealthy',
+        }, 200 if healthy else 503
 
     except Exception as e:
         return {
@@ -1607,12 +1624,6 @@ def health_check():
             'error': str(e),
             'timestamp': datetime.now(MOSCOW_TZ).isoformat()
         }, 503
-    finally:
-        if engine:
-            try:
-                engine.dispose()
-            except Exception as e:
-                logger.warning("Error disposing database engine: %s", e)
 
 
 @modify_bp.route('/', methods=['GET'])
