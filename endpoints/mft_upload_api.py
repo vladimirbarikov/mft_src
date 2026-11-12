@@ -80,9 +80,9 @@ Environment Variables:
 
 Endpoints:
     GET /health - Health check for monitoring
-    POST /upload-mft-excel - Main file upload endpoint (rate limited)
-    GET /file/<file_id> - Get file metadata by ID
-    GET /file/<file_id>/status - Check file existence status
+    POST /upload-mft-excel - Main file upload endpoint (admin, editor only)
+    GET /file/<file_id> - Get file metadata by ID (authenticated users)
+    GET /file/<file_id>/status - Check file existence status (authenticated users)
 
 Usage Example:
     ```python
@@ -175,6 +175,7 @@ load_dotenv(dotenv_path=env_path)
 # Local imports
 from config import get_logger
 from config.clamav_service import clamav_scanner
+from endpoints.auth import jwt_required, role_required, ROLES
 
 # Logger setup
 logger = get_logger(__name__)
@@ -937,6 +938,8 @@ def health_check():
 
 @upload_bp.route('/upload-mft-excel', methods=['POST'])
 @rate_limit()
+@jwt_required
+@role_required([ROLES['ADMIN'], ROLES['EDITOR']])
 def upload_mft_excel():
     """
     Main endpoint for secure Excel file upload with streaming (no disk save).
@@ -1093,6 +1096,7 @@ def upload_mft_excel():
 
 
 @upload_bp.route('/file/<file_id>', methods=['GET'])
+@jwt_required
 def get_file_info(file_id: str):
     """
     Retrieve metadata for a previously uploaded file by ID.
@@ -1114,6 +1118,7 @@ def get_file_info(file_id: str):
 
 
 @upload_bp.route('/file/<file_id>/status', methods=['GET'])
+@jwt_required
 def get_file_status(file_id: str):
     """
     Check if an uploaded file still exists (always true in streaming mode).
