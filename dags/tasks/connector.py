@@ -124,9 +124,10 @@ from typing import cast
 
 # Third-party imports
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 
 # The relative path to the root project directory
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -137,6 +138,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # Local imports
 from config import get_logger
+from database.context import get_current_username, get_current_user_id
 
 # Logger setup
 logger = get_logger(__name__)
@@ -289,6 +291,42 @@ def get_connection_string(config: dict | None = None) -> str:
     logger.debug("Connection string: %s", safe_conn_str)
 
     return conn_str
+
+
+def _apply_audit_context(_session, _transaction, connection):
+    """
+    Push identity into transaction-scoped GUCs for audit triggers.
+
+    Hooked on SessionEvents.after_begin: fires once per transaction,
+    after BEGIN is sent, while the transaction is still open. Inside it,
+    set_config(..., is_local=true) scopes the GUC to THIS transaction only;
+    it is discarded automatically on COMMIT/ROLLBACK, never leaks via pool.
+
+    Args:
+        session: the ORM Session (unused)
+        transaction: the SessionTransaction that just began (unused)
+        connection: the underlying Connection executing the transaction
+    """
+    connection.execute(
+        text(
+            "SELECT "
+            "  set_config('app.current_username', :u, true), "
+            "  set_config('app.current_user_id',  :uid, true)"
+        ),
+        {
+            "u": get_current_username() or "",
+            "uid": get_current_user_id() or "",
+        },
+    )
+
+
+# Register ONCE at module import: every Session() created anywhere in the
+# process inherits this hook. This is the SQLAlchemy-blessed way to apply
+# per-transaction state without wrapping each sessionmaker manually.
+# event.contains() makes the registration idempotent under module reloads.
+if not event.contains(Session, "after_begin", _apply_audit_context):
+    event.listen(Session, "after_begin", _apply_audit_context)
+    logger.debug("Audit context hook attached (Session after_begin)")
 
 
 def connect_to_database(
