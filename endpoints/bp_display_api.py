@@ -61,6 +61,7 @@ load_dotenv(dotenv_path=env_path)
 from config import get_logger
 from dags.tasks.connector import connect_to_database
 from endpoints.base_display_api import BaseDisplayAPI
+from endpoints.auth import jwt_required
 from database.views import (
     BreakpointDetailsView,
     PartsByBreakpointView,
@@ -889,6 +890,7 @@ def handle_api_response(f):
 
 @bp_bp.route('/<string:breakpoint_number>/history', methods=['GET'])
 @rate_limit()
+@jwt_required
 @handle_api_response
 def get_breakpoint_history_endpoint(breakpoint_number):
     """Get full history for a specific breakpoint."""
@@ -932,6 +934,7 @@ def get_breakpoint_history_endpoint(breakpoint_number):
 
 @bp_bp.route('/search', methods=['GET', 'POST'])
 @rate_limit()
+@jwt_required
 @handle_api_response
 def search_breakpoints_endpoint():
     """Search breakpoints with filters."""
@@ -1004,6 +1007,7 @@ def search_breakpoints_endpoint():
 
 @bp_bp.route('/stats', methods=['GET'])
 @rate_limit()
+@jwt_required
 @handle_api_response
 def get_breakpoint_statistics_endpoint():
     """Get breakpoint statistics and summary."""
@@ -1040,6 +1044,7 @@ def get_breakpoint_statistics_endpoint():
 
 @bp_bp.route('/<string:breakpoint_number>/details', methods=['GET'])
 @rate_limit()
+@jwt_required
 @handle_api_response
 def get_breakpoint_details_endpoint(breakpoint_number):
     """Get details for a specific breakpoint."""
