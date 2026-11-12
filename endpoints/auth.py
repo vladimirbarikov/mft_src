@@ -80,6 +80,7 @@ load_dotenv(dotenv_path=env_path)
 
 # Local imports
 from config import get_logger
+from database.context import set_current_identity, reset_current_identity
 
 # Logger setup
 logger = get_logger(__name__)
@@ -132,7 +133,8 @@ def generate_token(
     email: Optional[str] = None,
     roles: Optional[List[str]] = None,
     expiration_hours: Optional[int] = None,
-    custom_claims: Optional[Dict[str, Any]] = None
+    custom_claims: Optional[Dict[str, Any]] = None,
+    user_id: Optional[str] = None,
 ) -> str:
     """
     Generate a JWT token for authentication.
@@ -172,7 +174,11 @@ def generate_token(
         'iat': datetime.utcnow(),
     }
 
-    # Add custom claims if provided
+    # Add user_id if provided
+    if user_id:
+        payload['uid'] = user_id
+
+    # Add custom_claims if provided
     if custom_claims:
         payload.update(custom_claims)
 
@@ -377,6 +383,9 @@ def jwt_required(f):
     """
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        # Defensive: ContextVar may leak across requests in non-threaded servers
+        reset_current_identity()
+
         auth_header = request.headers.get('Authorization')
 
         if not auth_header:
@@ -418,6 +427,12 @@ def jwt_required(f):
                 username=payload.get('sub', 'unknown'),
                 email=payload.get('email'),
                 roles=payload.get('roles', [])
+            )
+
+            # Forward identity to DB-layer ContextVar for audit triggers.
+            set_current_identity(
+                username=payload.get('sub'),
+                user_id=payload.get('uid'),
             )
 
             logger.debug("JWT authenticated: %s", g.user)
