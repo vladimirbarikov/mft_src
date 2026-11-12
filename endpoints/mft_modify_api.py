@@ -13,7 +13,8 @@ KEY FEATURES:
     1. Virtual Breakpoints (MANYYNNNNN, e.g. MAN2600001):
         - Each manual change automatically creates a virtual breakpoint
         - Full integration with existing breakpoint architecture
-        - Easy to distinguish from automatic changes (MANYYNNNNN vs BPYYNNNNNN)
+        - Easy to distinguish from automatic changes (BPYYNNNNNN)
+        - Handled via BaseModifyService for unified creation logic
 
     2. Complete History Tracking:
         - Every change (automatic OR manual) has a breakpoint_id
@@ -36,10 +37,14 @@ KEY FEATURES:
         - Atomic rollback of the entire group
 
     6. Security & Access Control:
-        - JWT authentication required for all endpoints
-        - Role-based access control (admin, editor, viewer)
+        - JWT authentication required for all data endpoints
+        - Role-based access control:
+            * admin: Full access
+            * editor: Can modify parts and rollback versions
+            * viewer: Read-only access (history, versions)
         - Rate limiting to prevent abuse
         - Full audit log: who, when, why
+        - Audit fields (created_by, updated_by) are automatically populated
 
     7. Universal API Endpoint:
         - One endpoint for ALL attribute changes
@@ -59,31 +64,40 @@ BUSINESS VALUE:
     - Ability to rollback ANY change at ANY time
     - Single source of truth for all changes
 
-ENDPOINTS OVERVIEW:
-    POST   /api/v1/parts/{part_number}/modify
+ENDPOINTS OVERVIEW (Base URL: /api/mft/modify):
+    POST   /parts/{part_number}/modify
         - Main endpoint for ALL manual changes
         - Creates virtual breakpoint automatically
         - Validates fields via Marshmallow schema
+        - Requires: admin OR editor role
 
-    GET    /api/v1/parts/{part_number}/history
+    GET    /parts/{part_number}/history
         - Full history with source tracking
         - Shows both manual and automatic changes
         - Filters by model_code
+        - Requires: viewer, editor OR admin role
 
-    POST   /api/v1/parts/{part_number}/versions/{version}/rollback
+    POST   /parts/{part_number}/versions/{version}/rollback
         - Rollback to any historical version
         - Creates new virtual breakpoint
         - Preserves full audit trail
+        - Requires: admin OR editor role
 
-    GET    /api/v1/parts/{part_number}/versions
+    GET    /parts/{part_number}/versions
         - Simplified list of versions
         - Shows active/inactive status
+        - Requires: viewer, editor OR admin role
 
-    GET    /api/v1/health
+    GET    /health
         - Health check endpoint (no auth required)
 
-    POST   /api/v1/auth/token
+    POST   /auth/token
         - JWT token generation (for testing only)
+
+ARCHITECTURE:
+    - Inherits from BaseModifyService (endpoints/base_modify_api.py)
+    - Uses create_modify_app() for Flask initialization
+    - Uses apply_audit_fields() for automatic audit trail population
 
 DEPENDENCIES:
     Flask 3.0.3+         - Web framework
@@ -93,11 +107,11 @@ DEPENDENCIES:
     pyjwt 2.8.0+         - JWT authentication
     SQLAlchemy 1.4.54+   - Database ORM
 
-Version: 1.0.0
+Version: 1.1.0
 Compatibility: Python 3.14.4+, Flask 3.0.3+
 Maintainer: PLD Engineering Center
 Created: 2026-08-18
-Last Modified: 2026-08-19
+Last Modified: 2026-11-12
 License: MIT
 Status: Development
 """
@@ -106,20 +120,14 @@ from pathlib import Path
 import sys
 import os
 from datetime import datetime
-from functools import wraps, lru_cache
 from typing import Dict, Any, Optional, cast
-import zoneinfo
 
 # Third-party imports
 from dotenv import load_dotenv
-from flask import Flask, Blueprint, request, jsonify
-from flask_cors import CORS
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
+from flask import Blueprint, request
 from marshmallow import Schema, fields, validate, ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
 
 # The relative path to the root project directory
 try:
@@ -137,7 +145,7 @@ load_dotenv(dotenv_path=env_path)
 
 # Local imports
 from config import get_logger
-from dags.tasks.connector import connect_to_database, check_connection
+from dags.tasks.connector import check_connection
 from dags.tasks.change_classifier import ChangeClassifier
 from endpoints.auth import (
     jwt_required,
@@ -146,6 +154,16 @@ from endpoints.auth import (
     get_current_username,
     ROLES,
     generate_token,
+)
+from endpoints.base_modify_api import (
+    BaseModifyService,
+    get_db_session,
+    get_engine,
+    rate_limit,
+    handle_api_response,
+    create_modify_app,
+    MOSCOW_TZ,
+    FLASK_ENV
 )
 from database.database import (
     # Entity tables
@@ -161,45 +179,8 @@ from database.views import PartHistoryView, ActivePartsFullView
 # Logger setup
 logger = get_logger(__name__)
 
-# ========== TIMEZONE ==========
-MOSCOW_TZ = zoneinfo.ZoneInfo("Europe/Moscow")
-
-# ========== CONFIGURATION ==========
-FLASK_SECRET_KEY = os.getenv('FLASK_SECRET_KEY')
-if not FLASK_SECRET_KEY:
-    raise RuntimeError("FLASK_SECRET_KEY must be set in .env file")
-
-FLASK_HOST = os.getenv('FLASK_HOST', '0.0.0.0')
-FLASK_PORT = int(os.getenv('MFT_MODIFY_API_PORT', '5004'))
-FLASK_DEBUG = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
-FLASK_ENV = os.getenv('FLASK_ENV', 'development')
-IS_PRODUCTION = FLASK_ENV == 'production'
-
-ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', '*')
-RATE_LIMIT = os.getenv('RATE_LIMIT', '10 per minute')
-RATE_LIMIT_STORAGE_URL = os.getenv('RATE_LIMIT_STORAGE_URL', 'memory://')
-
 # ========== CREATING BLUEPRINT ==========
 modify_bp = Blueprint('modify', __name__, url_prefix='/api/mft/modify')
-
-# ========== RATE LIMITING SETUP ==========
-limiter = Limiter(
-    key_func=get_remote_address,
-    storage_uri=RATE_LIMIT_STORAGE_URL,
-    default_limits=["200 per day", "50 per hour"],
-    strategy="fixed-window"
-)
-
-
-def rate_limit(limit_string: Optional[str] = None):
-    """Decorator factory for applying rate limits to endpoints."""
-    def decorator(f):
-        @wraps(f)
-        def wrapped(*args, **kwargs):
-            return limiter.limit(limit_string or RATE_LIMIT)(f)(*args, **kwargs)
-        return wrapped
-    return decorator
-
 
 # ============================================================================
 # MARSHMALLOW SCHEMAS
@@ -382,71 +363,8 @@ class RollbackSchema(Schema):
 # CORE SERVICE
 # ============================================================================
 
-class ManualChangeService:
+class ManualChangeService(BaseModifyService):
     """Service for handling manual part changes with virtual breakpoints."""
-
-    def __init__(self, session: Session):
-        self.session = session
-
-    def create_virtual_breakpoint(
-        self,
-        part_number: str,
-        model_code: str,
-        change_reason: str,
-        ticket_number: Optional[str],
-        changed_by: str,
-        changes: Dict[str, Any],
-        change_domain: str,
-        change_nature: str
-    ) -> BreakpointData:
-        """Create a virtual breakpoint for manual changes.
-
-        Number format: MANYYNNNNN (MAN + 2-digit year + 5-digit sequence).
-        Matches the schema's String(10) limit and the automatic BP format
-        (BPYYNNNNNN, e.g. BP26000000).
-        """
-        yy = datetime.now(MOSCOW_TZ).strftime('%y')  # '26' for 2026
-
-        count_query = text("""
-            SELECT COUNT(*)
-            FROM breakpoint_data
-            WHERE breakpoint_number LIKE :pattern
-        """)
-        pattern = f"MAN{yy}%"
-        count = self.session.execute(count_query, {'pattern': pattern}).scalar() or 0
-        seq = str(count + 1).zfill(5)
-        breakpoint_number = f"MAN{yy}{seq}"  # e.g. MAN2600001 — 10 chars
-
-        changes_summary = ', '.join([f"{k}={v}" for k, v in changes.items()])
-        description = f"""MANUAL CHANGE
-            Part: {part_number}
-            Model: {model_code}
-            Domain: {change_domain}
-            Nature: {change_nature}
-            Changes: {changes_summary}
-            Reason: {change_reason}
-            Ticket: {ticket_number or 'N/A'}
-            Changed by: {changed_by}"""
-
-        # Create a BreakpointData object by assigning attributes
-        bp = BreakpointData()
-        bp.breakpoint_number = breakpoint_number
-        bp.breakpoint_status = 'closed'
-        bp.breakpoint_date = datetime.now(MOSCOW_TZ)
-        bp.description = description.strip()
-        bp.solution = f"Manual change by {changed_by}"
-        bp.change_domain = change_domain
-        bp.change_nature = change_nature
-
-        self.session.add(bp)
-        self.session.flush()
-
-        logger.info(
-            "Created virtual breakpoint %s (domain=%s, nature=%s)",
-            breakpoint_number, change_domain, change_nature
-        )
-
-        return bp
 
     def get_active_version(self, part_number: str, model_code: str) -> Optional[Dict[str, Any]]:
         """
@@ -673,6 +591,7 @@ class ManualChangeService:
             new_part_data['supplier_id'] = old_part.supplier_id
 
         new_part = PartData(**new_part_data)
+        self.apply_audit_fields(new_part)
         self.session.add(new_part)
         self.session.flush()
 
@@ -724,7 +643,7 @@ class ManualChangeService:
         new_supplier = SupplierData()
         new_supplier.supplier_name = supplier_name
         new_supplier.localization = localization
-
+        self.apply_audit_fields(new_supplier)
         self.session.add(new_supplier)
         self.session.flush()
         return new_supplier.supplier_id
@@ -800,6 +719,7 @@ class ManualChangeService:
                 logger.warning("Invalid box stacking: %s (must be >= 0)", box_stacking)
                 return None
 
+        self.apply_audit_fields(new_box)
         self.session.add(new_box)
         self.session.flush()
         return new_box.box_id
@@ -866,6 +786,7 @@ class ManualChangeService:
                 logger.warning("Invalid pallet stacking: %s (must be >= 0)", pallet_stacking)
                 return None
 
+        self.apply_audit_fields(new_pallet)
         self.session.add(new_pallet)
         self.session.flush()
         return new_pallet.pallet_id
@@ -895,6 +816,7 @@ class ManualChangeService:
             # Create a WorkshopData object by assigning attributes.
             workshop = WorkshopData()
             workshop.workshop_code = workshop_code
+            self.apply_audit_fields(workshop)
             self.session.add(workshop)
             self.session.flush()
 
@@ -905,6 +827,7 @@ class ManualChangeService:
         if line_name:
             new_line.line_name = line_name
 
+        self.apply_audit_fields(new_line)
         self.session.add(new_line)
         self.session.flush()
         return new_line.line_id
@@ -1066,83 +989,6 @@ class ManualChangeService:
             ptl.line_id = line_id
             self.session.add(ptl)
 
-
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
-@lru_cache(maxsize=1)
-def get_engine():
-    """
-    Return the process-wide engine (created lazily, cached).
-
-    Implemented via functools.lru_cache instead of a module-level global:
-      - no `global` statement / no mutable module state
-      - thread-safe (lru_cache is thread-safe since Python 3.2)
-      - exceptions are NOT cached, so retry logic inside
-        connect_to_database() still works on the next call
-      - testable: get_engine.cache_clear() resets in unit tests
-    """
-    return connect_to_database(
-        max_retries=int(os.getenv('DB_MAX_RETRIES', '5')),
-        retry_delay=int(os.getenv('DB_RETRY_DELAY', '2')),
-    )
-
-
-def get_db_session() -> Session:
-    """
-    Get a database session bound to the process-wide engine.
-    Caller MUST call session.close() in a finally block (returns the
-    connection to the pool; the pool itself is never destroyed).
-    """
-    return Session(get_engine())
-
-
-def handle_api_response(f):
-    """Decorator to handle API responses and errors."""
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        try:
-            result = f(*args, **kwargs)
-            if isinstance(result, tuple):
-                return result
-            if isinstance(result, dict):
-                if result.get('error'):
-                    status_code = result.get('status_code', 500)
-                    return jsonify(result), status_code
-                return jsonify(result)
-            return result
-
-        except ValidationError as e:
-            return jsonify({
-                'success': False,
-                'error': 'Validation error',
-                'details': e.messages
-            }), 400
-
-        except ValueError as e:
-            return jsonify({
-                'success': False,
-                'error': str(e)
-            }), 400
-
-        except RuntimeError as e:
-            logger.error("Runtime error: %s", e)
-            return jsonify({
-                'success': False,
-                'error': 'Service error'
-            }), 503
-
-        except Exception as e:
-            logger.error("Unexpected error: %s", e, exc_info=True)
-            return jsonify({
-                'success': False,
-                'error': 'Internal server error'
-            }), 500
-
-    return wrapper
-
-
 # ============================================================================
 # FLASK ENDPOINTS
 # ============================================================================
@@ -1211,15 +1057,24 @@ def modify_part(part_number):
         logger.debug("Classification: domain=%s, nature=%s", domain, nature)
 
         # Create breakpoint
+        # 1. Сreate a description
+        changes_summary = ', '.join([f"{k}={v}" for k, v in data['changes'].items()])
+        description = f"""MANUAL CHANGE
+            Part: {part_number}
+            Model: {model_code}
+            Domain: {domain}
+            Nature: {nature}
+            Changes: {changes_summary}
+            Reason: {data['change_reason']}
+            Ticket: {data.get('ticket_number') or 'N/A'}
+            Changed by: {changed_by}"""
+
+        # 2. Call the base method
         bp = service.create_virtual_breakpoint(
-            part_number=part_number,
-            model_code=model_code,
-            change_reason=data['change_reason'],
-            ticket_number=data.get('ticket_number'),
-            changed_by=changed_by,
-            changes=data['changes'],
+            description=description,
             change_domain=domain,
-            change_nature=nature
+            change_nature=nature,
+            changed_by=changed_by
         )
 
         # Apply changes
@@ -1443,15 +1298,22 @@ def rollback_part_version(part_number, version):
         domain, nature = ChangeClassifier.classify(changes, current_attrs)
 
         # Create breakpoint
+        # 1. Сreate a description
+        changes_summary = ', '.join([f"{k}={v}" for k, v in changes.items()])
+        description = f"""MANUAL ROLLBACK
+            Part: {part_number}
+            Model: {model_code}
+            Target Version: {version}
+            Changes: {changes_summary}
+            Reason: {reason}
+            Changed by: {changed_by}"""
+
+        # 2. Call the base method
         bp = service.create_virtual_breakpoint(
-            part_number=part_number,
-            model_code=model_code,
-            change_reason=f'Rollback to version {version}: {reason}',
-            ticket_number=data.get('ticket_number'),
-            changed_by=changed_by,
-            changes=changes,
+            description=description,
             change_domain=domain,
-            change_nature=nature
+            change_nature=nature,
+            changed_by=changed_by
         )
 
         # Apply changes
@@ -1663,55 +1525,15 @@ def api_documentation():
     }
 
 
-# ============================================================================
-# FLASK APP SETUP
-# ============================================================================
-
-def create_app():
-    """Create and configure the Flask application instance."""
-    app = Flask(__name__)
-    app.secret_key = FLASK_SECRET_KEY
-
-    # CORS
-    if ALLOWED_ORIGINS == "*":
-        CORS(app)
-    else:
-        origins = [origin.strip() for origin in ALLOWED_ORIGINS.split(',')]
-        CORS(app, origins=origins, supports_credentials=True)
-
-    # Security headers
-    @app.after_request
-    def add_security_headers(response):
-        if IS_PRODUCTION:
-            response.headers.add('X-Content-Type-Options', 'nosniff')
-            response.headers.add('X-Frame-Options', 'DENY')
-            response.headers.add('X-XSS-Protection', '1; mode=block')
-        return response
-
-    # Register blueprint
-    app.register_blueprint(modify_bp)
-
-    # Rate limiting
-    limiter.init_app(app)
-
-    # Error handlers
-    @app.errorhandler(404)
-    def not_found(_):
-        return jsonify({'success': False, 'error': 'Resource not found'}), 404
-
-    @app.errorhandler(429)
-    def ratelimit_handler(_):
-        return jsonify({
-            'success': False,
-            'error': 'Rate limit exceeded. Please try again later.'
-        }), 429
-
-    return app
-
-
-flask_app = create_app()
+flask_app = create_modify_app(modify_bp, "MFT Modify API")
 
 if __name__ == '__main__':
+    # Define host, port, and debug specifically for this API
+    FLASK_HOST = os.getenv('FLASK_HOST', '0.0.0.0')
+    FLASK_PORT = int(os.getenv('MFT_MODIFY_API_PORT', '5004'))
+    FLASK_DEBUG = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
+    FLASK_ENV = os.getenv('FLASK_ENV', 'development')
+
     logger.info("=" * 60)
     logger.info("Starting MFT Modify API on %s:%s", FLASK_HOST, FLASK_PORT)
     logger.info("Environment: %s", FLASK_ENV)
