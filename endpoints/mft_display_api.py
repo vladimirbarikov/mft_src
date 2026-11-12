@@ -61,6 +61,7 @@ load_dotenv(dotenv_path=env_path)
 from config import get_logger
 from dags.tasks.connector import connect_to_database
 from endpoints.base_display_api import BaseDisplayAPI
+from endpoints.auth import jwt_required
 from database.views import ActivePartsFullView, PartHistoryView
 
 # Logger setup
@@ -901,6 +902,7 @@ def handle_api_response(f):
 
 @display_bp.route('/search', methods=['GET', 'POST'])
 @rate_limit()
+@jwt_required
 @handle_api_response
 def universal_search_endpoint():
     """Search active parts with filters."""
@@ -965,6 +967,7 @@ def universal_search_endpoint():
 
 @display_bp.route('/parts/<string:part_number>/history', methods=['GET'])
 @rate_limit()
+@jwt_required
 @handle_api_response
 def get_part_history_endpoint(part_number):
     """Get full history for a specific part."""
@@ -1004,6 +1007,7 @@ def get_part_history_endpoint(part_number):
 
 @display_bp.route('/parts/<string:part_number>/details', methods=['GET'])
 @rate_limit()
+@jwt_required
 @handle_api_response
 def get_active_part_details_endpoint(part_number):
     """Get details for a specific active part."""
@@ -1043,6 +1047,7 @@ def get_active_part_details_endpoint(part_number):
 
 @display_bp.route('/export', methods=['POST'])
 @rate_limit()
+@jwt_required
 @handle_api_response
 def export_to_excel_endpoint():
     """Export search results to Excel."""
