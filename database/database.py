@@ -2601,11 +2601,44 @@ class DepartmentData(Base):
         default=True,
         server_default=text('true')
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     users = relationship(
         'UserData',
         back_populates='department',
         lazy='selectin'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select',
+        post_update=True
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select',
+        post_update=True
     )
 
 
@@ -2679,11 +2712,44 @@ class UserRoleData(Base):
         default=True,
         server_default=text('true')
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     users = relationship(
         'UserData',
         back_populates='role',
         lazy='selectin'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select',
+        post_update=True
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select',
+        post_update=True
     )
 
 
@@ -3346,6 +3412,27 @@ class PartToBox(Base):
         CheckConstraint('part_per_box > 0'),
         nullable=True
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     part = relationship(
         'PartData',
@@ -3354,6 +3441,16 @@ class PartToBox(Base):
     box = relationship(
         'BoxData',
         back_populates='parts'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select'
     )
 
 
@@ -3425,6 +3522,27 @@ class PartToModel(Base):
         nullable=True,
         comment="Which breakpoint caused deactivation for this model"
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     part = relationship(
         'PartData',
@@ -3443,6 +3561,16 @@ class PartToModel(Base):
         foreign_keys=[deactivated_by_breakpoint_id],
         lazy='joined',
         back_populates='deactivated_part_models'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select'
     )
     # Properties
     @property
@@ -3492,6 +3620,27 @@ class PartToColor(Base):
         primary_key=True,
         comment="The color cannot be removed if it is used by parts!"
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     part = relationship(
         'PartData',
@@ -3500,6 +3649,16 @@ class PartToColor(Base):
     color = relationship(
         'ColorData',
         back_populates='parts'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select'
     )
 
 
@@ -3538,6 +3697,27 @@ class PartToLine(Base):
         primary_key=True,
         comment="The line cannot be deleted if parts are installed on it!"
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     part = relationship(
         'PartData',
@@ -3546,6 +3726,16 @@ class PartToLine(Base):
     line = relationship(
         'LineData',
         back_populates='parts'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select'
     )
 
 
@@ -3638,7 +3828,7 @@ class PartToBreakpoint(Base):
         nullable=False,
         comment="Vehicle configuration this change applies to"
     )
-    # Change attributes (from BP Excel)
+    # Change attributes
     interchangeable = Column(
         String(40),
         nullable=True,
@@ -3650,7 +3840,7 @@ class PartToBreakpoint(Base):
         nullable=True,
         comment="Whether old part can still be used in production"
     )
-    # Stock snapshot (from BP Excel + monitoring checklist)
+    # Stock snapshot (monitoring checklist)
     # Numeric(12, 3): supports both discrete parts (pcs) and bulk materials (kg, l)
     stock_1001 = Column(
         Numeric(12, 3),
@@ -3715,6 +3905,27 @@ class PartToBreakpoint(Base):
         nullable=True,
         comment="Production line relevant for this change (where the part is installed after the change)"
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     new_part = relationship(
         'PartData',
@@ -3754,6 +3965,16 @@ class PartToBreakpoint(Base):
         foreign_keys=[line_id],
         back_populates='breakpoint_changes',
         lazy='joined'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select'
     )
 
 
@@ -3805,6 +4026,27 @@ class BoxToPallet(Base):
         CheckConstraint('box_per_pallet > 0'),
         nullable=True
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     part = relationship(
         'PartData',
@@ -3817,6 +4059,16 @@ class BoxToPallet(Base):
     pallet = relationship(
         'PalletData',
         back_populates='boxes'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select'
     )
 
 
@@ -3879,6 +4131,27 @@ class BatchToVehicle(Base):
         ForeignKey('engine_data.engine_id', ondelete='RESTRICT'),
         primary_key=True
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     batch = relationship(
         'BatchData',
@@ -3899,6 +4172,16 @@ class BatchToVehicle(Base):
     engine = relationship(
         'EngineData',
         back_populates='batch_vehicles'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select'
     )
 
 
@@ -3963,6 +4246,27 @@ class ConfigurationToTransmission(Base):
         Text,
         nullable=True
     )
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
     # Relationships
     configuration = relationship(
         'ConfigurationData',
@@ -3971,4 +4275,14 @@ class ConfigurationToTransmission(Base):
     transmission = relationship(
         'TransmissionData',
         back_populates='allowed_configurations'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select'
     )
