@@ -266,8 +266,8 @@ SELECT
 
     -- Source tracking
     CASE
-        WHEN bd.breakpoint_number LIKE 'MAN-%' THEN 'manual'
-        WHEN bd.breakpoint_number LIKE 'BP-%' THEN 'automatic'
+        WHEN bd.breakpoint_number LIKE 'MAN%' THEN 'manual'
+        WHEN bd.breakpoint_number LIKE 'BP%'  THEN 'automatic'
         ELSE 'unknown'
     END AS change_source,
 
@@ -331,7 +331,7 @@ SELECT
 
     -- Source
     CASE
-        WHEN bd.breakpoint_number LIKE 'MAN-%' THEN 'manual'
+        WHEN bd.breakpoint_number LIKE 'MAN%' THEN 'manual'
         ELSE 'automatic'
     END AS source
 
@@ -374,8 +374,8 @@ SELECT
 
     -- Change counts
     COUNT(DISTINCT ptb.breakpoint_id) AS total_changes,
-    COUNT(DISTINCT CASE WHEN bd.breakpoint_number LIKE 'MAN-%' THEN ptb.breakpoint_id END) AS manual_changes,
-    COUNT(DISTINCT CASE WHEN bd.breakpoint_number LIKE 'BP-%' THEN ptb.breakpoint_id END) AS automatic_changes,
+    COUNT(DISTINCT CASE WHEN bd.breakpoint_number LIKE 'MAN%' THEN ptb.breakpoint_id END) AS manual_changes,
+    COUNT(DISTINCT CASE WHEN bd.breakpoint_number LIKE 'BP%' THEN ptb.breakpoint_id END) AS automatic_changes,
 
     -- Latest change
     MAX(bd.breakpoint_date) AS latest_change_date,
@@ -432,8 +432,8 @@ SELECT
     bd.created_at,
 
     CASE
-        WHEN bd.breakpoint_number LIKE 'MAN-%' THEN 'manual'
-        WHEN bd.breakpoint_number LIKE 'BP-%' THEN 'automatic'
+        WHEN bd.breakpoint_number LIKE 'MAN%' THEN 'manual'
+        WHEN bd.breakpoint_number LIKE 'BP%'  THEN 'automatic'
         ELSE 'unknown'
     END AS source,
 
@@ -532,13 +532,13 @@ SELECT
     ROW_NUMBER() OVER (
         ORDER BY DATE_TRUNC('month', bd.breakpoint_date) DESC,
                  bd.change_domain, bd.change_nature,
-                 CASE WHEN bd.breakpoint_number LIKE 'MAN-%' THEN 'manual' ELSE 'automatic' END
+                 CASE WHEN bd.breakpoint_number LIKE 'MAN%' THEN 'manual' ELSE 'automatic' END
     ) AS row_id,
     DATE_TRUNC('month', bd.breakpoint_date) AS month,
     bd.change_domain,
     bd.change_nature,
     CASE
-        WHEN bd.breakpoint_number LIKE 'MAN-%' THEN 'manual'
+        WHEN bd.breakpoint_number LIKE 'MAN%' THEN 'manual'
         ELSE 'automatic'
     END AS source,
     COUNT(*) AS breakpoint_count,
@@ -552,7 +552,7 @@ GROUP BY
     DATE_TRUNC('month', bd.breakpoint_date),
     bd.change_domain,
     bd.change_nature,
-    CASE WHEN bd.breakpoint_number LIKE 'MAN-%' THEN 'manual' ELSE 'automatic' END
+    CASE WHEN bd.breakpoint_number LIKE 'MAN%' THEN 'manual' ELSE 'automatic' END
 
 ORDER BY month DESC, breakpoint_count DESC;
 """
