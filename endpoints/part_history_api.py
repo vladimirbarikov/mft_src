@@ -62,6 +62,7 @@ load_dotenv(dotenv_path=env_path)
 from config import get_logger
 from dags.tasks.connector import connect_to_database
 from endpoints.base_display_api import BaseDisplayAPI
+from endpoints.auth import jwt_required
 from database.views import (
     PartHistoryView,
     PartChangeSummaryView
@@ -801,6 +802,7 @@ def handle_api_response(f):
 
 @part_bp.route('/<string:part_number>/history', methods=['GET'])
 @rate_limit()
+@jwt_required
 @handle_api_response
 def get_part_history_endpoint(part_number):
     """Get full change history for a specific part."""
@@ -844,6 +846,7 @@ def get_part_history_endpoint(part_number):
 
 @part_bp.route('/<string:part_number>/versions', methods=['GET'])
 @rate_limit()
+@jwt_required
 @handle_api_response
 def get_part_versions_endpoint(part_number):
     """Get all versions with summary information."""
@@ -887,6 +890,7 @@ def get_part_versions_endpoint(part_number):
 
 @part_bp.route('/<string:part_number>/timeline', methods=['GET'])
 @rate_limit()
+@jwt_required
 @handle_api_response
 def get_part_timeline_endpoint(part_number):
     """Get timeline of changes for a part."""
@@ -930,6 +934,7 @@ def get_part_timeline_endpoint(part_number):
 
 @part_bp.route('/<string:part_number>/changes', methods=['GET'])
 @rate_limit()
+@jwt_required
 @handle_api_response
 def get_part_changes_by_breakpoint_endpoint(part_number):
     """Get changes grouped by breakpoint."""
