@@ -282,6 +282,9 @@ def get_current_user() -> Dict[str, Any]:
         'roles': getattr(g, 'user_roles', []),
     }
 
+def get_current_user_id() -> Optional[str]:
+    """Get current user ID."""
+    return getattr(g, 'user_id', None)
 
 def get_current_username() -> str:
     """Get current username."""
@@ -428,6 +431,9 @@ def jwt_required(f):
                 email=payload.get('email'),
                 roles=payload.get('roles', [])
             )
+
+            if payload.get('uid'):
+                g.user_id = payload.get('uid')
 
             # Forward identity to DB-layer ContextVar for audit triggers.
             set_current_identity(
@@ -582,6 +588,7 @@ __all__ = [
     # User data functions
     'set_current_user',
     'get_current_user',
+    'get_current_user_id',
     'get_current_username',
     'get_current_email',
     'get_current_roles',
