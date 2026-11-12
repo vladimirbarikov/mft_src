@@ -58,8 +58,10 @@ import os
 # Third-party imports
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, or_
+from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import SQLAlchemyError, OperationalError, ProgrammingError, IntegrityError
+from werkzeug.security import generate_password_hash
 
 # The relative path to the root project directory
 try:
@@ -78,6 +80,8 @@ load_dotenv(env_path)
 # Local imports
 from config import get_logger
 from database.user_roles import DatabaseAdmin, DatabaseEditor, DatabaseViewer
+from database.database import UserData, UserRoleData, DepartmentData
+from endpoints.auth import jwt_required, role_required, ROLES
 
 # Logger setup
 logger = get_logger(__name__)
@@ -94,6 +98,7 @@ DB_NAME = os.getenv('DB_NAME', 'mft_db')
 DB_USER = os.getenv('DB_USER', 'postgres')
 DB_PASSWORD = os.getenv('DB_PASSWORD')
 
+
 def get_admin_engine():
     """Create connection with administrative privileges"""
     try:
@@ -107,10 +112,22 @@ def get_admin_engine():
         logger.error("Unexpected error creating engine: %s", e)
         return None
 
+
+def get_db_session() -> Session:
+    """Create a session for application database (user_data)"""
+    engine = get_admin_engine()
+    if not engine:
+        raise RuntimeError("Failed to connect to application database")
+    SessionMaker = sessionmaker(bind=engine)
+    return SessionMaker()
+
+
 @app.route('/api/users/create', methods=['POST'])
+@jwt_required
+@role_required([ROLES['ADMIN']])
 def create_user():
     """
-    Create a new database user
+    Create a new database user (syncs pg_roles and user_data)
     """
     try:
         # Check JSON
@@ -127,7 +144,8 @@ def create_user():
                 'error': 'JSON request body is required'
             }), 400
 
-        required_fields = ['username', 'password', 'role']
+        # Added 'email' to required fields because UserData requires it
+        required_fields = ['username', 'password', 'role', 'email']
         for field in required_fields:
             if field not in data:
                 return jsonify({
@@ -138,19 +156,15 @@ def create_user():
         username = data['username'].strip()
         password = data['password']
         role = data['role'].lower().strip()
+        email = data['email'].strip()
         description = data.get('description', '')
+        department_code = data.get('department_code')
 
         # User name validation
-        if not username:
+        if not username or len(username) > 50:
             return jsonify({
                 'success': False,
-                'error': 'Username cannot be empty'
-            }), 400
-
-        if len(username) > 50:  # PostgreSQL limit for role names
-            return jsonify({
-                'success': False,
-                'error': 'Username must be 50 characters or less'
+                'error': 'Username must be between 1 and 50 characters'
             }), 400
 
         # Password validation
@@ -168,7 +182,7 @@ def create_user():
                 'error': f'Invalid role. Valid values: {", ".join(valid_roles)}'
             }), 400
 
-        # Creating user objects
+        # 1. Create Postgres Role
         if role == 'admin':
             user = DatabaseAdmin(username, password, description)
         elif role == 'editor':
@@ -176,59 +190,88 @@ def create_user():
         else:  # viewer
             user = DatabaseViewer(username, password, description)
 
-        # Creating users in database
         result = user.create_db_user()
 
-        if result:
-            logger.info("User '%s' successfully created with role '%s'", username, role)
-            return jsonify({
-                'success': True,
-                'message': f'User {username} created successfully',
-                'user': {
-                    'username': username,
-                    'role': role,
-                    'description': description,
-                    'connection_string': user.get_connection_string()
-                }
-            }), 201
-        else:
-            logger.error("Failed to create user '%s'", username)
+        if not result:
+            logger.error("Failed to create PG user '%s'", username)
             return jsonify({
                 'success': False,
-                'error': f'Failed to create user {username}'
+                'error': f'Failed to create PG user {username}'
             }), 500
 
-    except KeyError as e:
-        logger.error("Missing key in request: %s", e)
+        # 2. Sync to Application Database (user_data)
+        try:
+            session = get_db_session()
+        except RuntimeError as e:
+            return jsonify({
+                'success': False,
+                'error': str(e)
+            }), 500
+
+        try:
+            # Check if user already exists in app db
+            existing_user_by_name = session.query(UserData).filter_by(username=username).first()
+            existing_user_by_email = session.query(UserData).filter_by(email=email).first()
+
+            if existing_user_by_name or existing_user_by_email:
+                session.rollback()
+                return jsonify({
+                    'success': False,
+                    'error': 'User with this username or email already exists in application DB'
+                }), 409
+
+            # Find role_id
+            user_role = session.query(UserRoleData).filter_by(role_code=role).first()
+
+            if not user_role:
+                session.rollback()
+                return jsonify({
+                    'success': False,
+                    'error': f'Role {role} not found in user_role_data. Please run DB initializer.'
+                }), 500
+
+            # Find department_id (optional)
+            dept_id = None
+            if department_code:
+                dept = session.query(DepartmentData).filter_by(department_code=department_code).first()
+                if dept:
+                    dept_id = dept.department_id
+
+            # Create app user record
+            new_app_user = UserData()
+            new_app_user.username = username
+            new_app_user.email = email
+            new_app_user.hashed_password = generate_password_hash(password)
+            new_app_user.role_id = user_role.role_id
+            new_app_user.department_id = dept_id
+            new_app_user.full_name = description
+            new_app_user.is_active = True
+
+            session.add(new_app_user)
+            session.commit()
+            logger.info("Application user '%s' successfully created in user_data", username)
+
+        except Exception as db_error:
+            session.rollback()
+            logger.error("Error creating application user '%s': %s", username, db_error)
+            return jsonify({
+                'success': False,
+                'error': f'PG Role created, but failed to sync to application DB: {str(db_error)}'
+            }), 500
+        finally:
+            session.close()
+
         return jsonify({
-            'success': False,
-            'error': f'Invalid request structure: missing {str(e)}'
-        }), 400
-
-    except ValueError as e:
-        logger.error("Value error: %s", e)
-        return jsonify({
-            'success': False,
-            'error': f'Invalid value: {str(e)}'
-        }), 400
-
-    except SQLAlchemyError as e:
-        logger.error("Database error creating user: %s", e)
-        if isinstance(e, IntegrityError):
-            return jsonify({
-                'success': False,
-                'error': f'User {username} already exists'
-            }), 409
-        elif isinstance(e, OperationalError):
-            return jsonify({
-                'success': False,
-                'error': 'Database connection failed'
-            }), 500
-        else:
-            return jsonify({
-                'success': False,
-                'error': f'Database error: {str(e)}'
-            }), 500
+            'success': True,
+            'message': f'User {username} created successfully (PG + App)',
+            'user': {
+                'username': username,
+                'email': email,
+                'role': role,
+                'description': description,
+                'connection_string': user.get_connection_string()
+            }
+        }), 201
 
     except Exception as e:
         logger.error("Unexpected error creating user: %s", e)
@@ -237,7 +280,10 @@ def create_user():
             'error': 'Internal server error'
         }), 500
 
+
 @app.route('/api/users/test-connection/<username>', methods=['GET'])
+@jwt_required
+@role_required([ROLES['ADMIN']])
 def test_user_connection(username: str):
     """
     Test user connection to database
@@ -330,7 +376,10 @@ def test_user_connection(username: str):
         if engine:
             engine.dispose()
 
+
 @app.route('/api/users/list', methods=['GET'])
+@jwt_required
+@role_required([ROLES['ADMIN']])
 def list_users():
     """
     Get list of all database users
@@ -399,14 +448,17 @@ def list_users():
         if engine:
             engine.dispose()
 
+
 @app.route('/api/users/delete/<username>', methods=['DELETE'])
+@jwt_required
+@role_required([ROLES['ADMIN']])
 def delete_user(username: str):
     """
-    Delete a database user
+    Delete a database user (PG + soft delete in App DB)
     """
     engine = None
+
     try:
-        # User name validation
         if not username or not username.strip():
             return jsonify({
                 'success': False,
@@ -423,6 +475,21 @@ def delete_user(username: str):
                 'error': f'Cannot delete system user {username}'
             }), 400
 
+        # 1. Soft delete from application DB (user_data)
+        try:
+            session = get_db_session()
+            app_user = session.query(UserData).filter_by(username=username).first()
+            if app_user:
+                app_user.is_active = False
+                session.commit()
+                logger.info("Application user '%s' soft-deleted (is_active=False)", username)
+        except RuntimeError as e:
+            logger.warning("Could not connect to application DB for soft delete: %s", e)
+        finally:
+            if session:
+                session.close()
+
+        # 2. Drop role from PostgreSQL
         engine = get_admin_engine()
         if not engine:
             return jsonify({
@@ -437,9 +504,9 @@ def delete_user(username: str):
 
             if not result.fetchone():
                 return jsonify({
-                    'success': False,
-                    'error': f'User {username} not found'
-                }), 404
+                    'success': True,
+                    'message': f'User {username} not found in PostgreSQL, but App DB updated if existed.'
+                })
 
             try:
                 # Revocation of privileges
@@ -452,52 +519,37 @@ def delete_user(username: str):
 
             except ProgrammingError as e:
                 error_msg = str(e)
-                # Check if the user has active connections.
                 if "cannot be dropped" in error_msg and "has dependent objects" in error_msg:
-                    logger.error("User %s has dependent objects: %s", username, e)
                     return jsonify({
                         'success': False,
-                        'error': f'Cannot delete user {username} because they own database objects. Reassign or drop objects first.'
+                        'error': f'Cannot delete PG role {username} because they own database objects.'
                     }), 409
                 elif "cannot be dropped" in error_msg and "active sessions" in error_msg:
-                    logger.error("User %s has active sessions: %s", username, e)
                     return jsonify({
                         'success': False,
-                        'error': f'Cannot delete user {username} because they have active sessions. Terminate sessions first.'
+                        'error': f'Cannot delete PG role {username} because they have active sessions.'
                     }), 409
                 else:
                     raise
 
-            logger.info("User '%s' successfully deleted", username)
+            logger.info("PG User '%s' successfully deleted", username)
             return jsonify({
                 'success': True,
-                'message': f'User {username} successfully deleted'
+                'message': f'User {username} successfully deleted (PG dropped, App DB disabled)'
             })
 
     except OperationalError as e:
         logger.error("Database connection error deleting user %s: %s", username, e)
-        return jsonify({
-            'success': False,
-            'error': 'Database connection failed'
-        }), 500
-
-    except ProgrammingError as e:
-        logger.error("SQL error deleting user %s: %s", username, e)
-        return jsonify({
-            'success': False,
-            'error': f'Database error: {str(e)}'
-        }), 500
-
+        return jsonify({'success': False, 'error': 'Database connection failed'}), 500
     except Exception as e:
         logger.error("Unexpected error deleting user %s: %s", username, e)
-        return jsonify({
-            'success': False,
-            'error': 'Internal server error'
-        }), 500
-
+        return jsonify({'success': False, 'error': 'Internal server error'}), 500
     finally:
+        if session:
+            session.close()
         if engine:
             engine.dispose()
+
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -555,6 +607,7 @@ def not_found(_error):
         'success': False,
         'error': 'Endpoint not found'
     }), 404
+
 
 @app.errorhandler(405)
 def method_not_allowed(_error):
