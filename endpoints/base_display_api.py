@@ -20,7 +20,7 @@ Version: 1.0.0
 Compatibility: Python 3.14.4+, Flask 6.0.2+, SQLAlchemy 1.4.54+
 Maintainer: PLD Engineering Center
 Created: 2026-08-18
-Last Modified: 2026-08-18
+Last Modified: 2026-11-12
 License: MIT
 Status: Development
 """
@@ -58,6 +58,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # Local imports
 from config import get_logger
+from endpoints.auth import get_current_roles, ROLES
 
 # Logger setup
 logger = get_logger(__name__)
@@ -106,6 +107,17 @@ class BaseDisplayAPI:
     # Timezone settings
     MOSCOW_TZ = None  # Will be initialized in __init__
 
+    # Audit fields to hide from non-admin users
+    AUDIT_FIELDS = {
+        'created_at', 'updated_at',
+        'created_by_user_id', 'updated_by_user_id',
+        'created_by', 'updated_by',
+        # Uppercase variants
+        'CREATED_AT', 'UPDATED_AT',
+        'CREATED_BY_USER_ID', 'UPDATED_BY_USER_ID',
+        'CREATED_BY', 'UPDATED_BY'
+    }
+
     def __init__(self, engine):
         """
         Initialize with database engine.
@@ -130,6 +142,43 @@ class BaseDisplayAPI:
             self.MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
         logger.info("%s initialized successfully", self.__class__.__name__)
+
+    def _sanitize_data(self, data: Any) -> Any:
+        """
+        Recursively remove audit fields from dictionaries and lists
+        if the current user does not have the admin role.
+        """
+        # Safely check roles. If called outside a request context,
+        # assume non-admin (fail-closed).
+        try:
+            is_admin = ROLES['ADMIN'] in get_current_roles()
+        except RuntimeError:
+            # Works outside Flask context (e.g., background tasks)
+            is_admin = False
+        except Exception as e:
+            logger.warning("Error checking roles for data sanitization: %s", e)
+            is_admin = False
+
+        if is_admin:
+            return data
+
+        if isinstance(data, dict):
+            # Create a copy to avoid mutating the original object
+            sanitized_dict = {}
+            for key, value in data.items():
+                if key in self.AUDIT_FIELDS:
+                    # Skip audit field
+                    continue
+                # Recursively sanitize nested structures
+                sanitized_dict[key] = self._sanitize_data(value)
+            return sanitized_dict
+
+        elif isinstance(data, list):
+            # Sanitize each list item
+            return [self._sanitize_data(item) for item in data]
+
+        # Return primitives (strings, numbers, None) as is
+        return data
 
     # ========================================================================
     # SESSION MANAGEMENT
@@ -183,7 +232,7 @@ class BaseDisplayAPI:
         try:
             result = query_func(session)
             session.commit()
-            return result
+            return self._sanitize_data(result)
 
         except IntegrityError as e:
             session.rollback()
