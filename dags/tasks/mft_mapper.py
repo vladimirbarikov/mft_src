@@ -15,7 +15,7 @@ Key Features:
     - Memory-efficient caching of ID mappings
     - Junction table record mapping with automatic dimension handling
     - Support for multiple input formats (dict, tuple, list)
-    - Consistent packaging number generation matching database triggers
+    - Tuple-based composite key lookups for computed packaging columns
 
 Configuration Source:
     This module uses constants from columns_config.py:
@@ -83,7 +83,7 @@ ARCHITECTURE NOTES:
 
 Dependencies:
     - SQLAlchemy 1.4.54+ for ORM and database abstraction
-    - PostgreSQL 12+ as the source database for ID lookups
+    - PostgreSQL 13+ as the source database for ID lookups
 
 Performance Considerations:
     - Lazy loading: Mappings are loaded on first use
@@ -144,10 +144,6 @@ The mapping logic mirrors database structure:
     - Creates tuple keys for in-memory lookup
     - No string formatting required (unlike database's Computed columns)
 
-The generation logic matches database triggers exactly:
-    - 'returnable' → 'R L-W-H'
-    - 'non-returnable' → 'N L-W-H'
-
 Error Handling:
     - Graceful handling of missing mappings (returns None with debug logging)
     - Input validation for composite keys (type, dimensions, null checks)
@@ -174,10 +170,10 @@ Comparison with BP Mapper:
     | Complexity          | Low                       | High                      |
 
 Version: 1.0.0
-Compatibility: Python 3.14.4+, SQLAlchemy 1.4.54+, PostgreSQL 12+
+Compatibility: Python 3.14.4+, SQLAlchemy 1.4.54+, PostgreSQL 13+
 Maintainer: PLD Engineering Center
 Created: 2025-01-19
-Last Modified: 2026-03-21
+Last Modified: 2026-11-23
 License: MIT
 Status: Production
 """
@@ -209,7 +205,8 @@ from config.columns_config import (
 from dags.tasks.connector import connect_to_database
 from database.database import (
     SupplierData, PartData, BoxData, PalletData,
-    ConfigurationData, ModelData, WorkshopData, LineData
+    ConfigurationData, ModelData, WorkshopData, LineData,
+    ColorData, TransmissionData
 )
 
 # Logger setup
@@ -224,12 +221,12 @@ class MFTObjectMapper:
     database IDs with intelligent caching.
     
     Examples:
-        >>> mapper = create_mapper()
+        >>> mapper = create_mft_mapper()
         >>> supplier_id = mapper.get_id('supplier_name', 'Acme Corp')
         >>> box_id = mapper.get_id('box_composite', ('returnable', 400, 300, 200))
     """
     # Configuration with table names
-    COLUMN_TO_MODEL = {
+    COLUMN_TO_MODEL: dict[str, Any] = {
         # Supplier mappings
         'supplier_name': (SupplierData, 'supplier_name', 'supplier_id'),
         'supplier_id': (SupplierData, 'supplier_id', 'supplier_id'),
@@ -267,6 +264,14 @@ class MFTObjectMapper:
         # Line mappings
         'line_code': (LineData, 'line_code', 'line_id'),
         'line_id': (LineData, 'line_id', 'line_id'),
+
+        # Color mappings
+        'color_code': (ColorData, 'color_code', 'color_id'),
+        'color_id': (ColorData, 'color_id', 'color_id'),
+
+        # Transmission mappings
+        'transmission': (TransmissionData, 'transmission', 'transmission_id'),
+        'transmission_id': (TransmissionData, 'transmission_id', 'transmission_id'),
     }
 
     def __init__(
@@ -808,7 +813,7 @@ class MFTObjectMapper:
         Map part_to_model junction record with required configuration.
         
         Args:
-            record: Dict with with required fields:
+            record: Dict with required fields:
                     part_number, model_code, configuration
                     Optional: part_per_vehicle
         
@@ -938,6 +943,111 @@ class MFTObjectMapper:
             )
             return None
 
+    def _map_part_to_color(self, record: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """
+        Map part_to_color junction record.
+        
+        Args:
+            record: Dict with part_number, color_code
+        
+        Returns:
+            Dict with part_id, color_id or None
+        """
+        try:
+            required_cols = MFT_JUNCTION_REQUIRED['part_to_color']
+            for col in required_cols:
+                if col not in record:
+                    logger.debug(
+                        "Missing required column '%s' in part_to_color record",
+                        col
+                    )
+                    return None
+
+            part_id = self.get_id('part_number', record['part_number'])
+            if not part_id:
+                logger.debug(
+                    "No part_id found for part_number: %s",
+                    record['part_number']
+                )
+                return None
+
+            color_id = self.get_id('color_code', record['color_code'])
+            if not color_id:
+                logger.debug(
+                    "No color_id found for color_code: %s",
+                    record['color_code']
+                )
+                return None
+
+            return {
+                'part_id': part_id,
+                'color_id': color_id
+            }
+
+        except (KeyError, ValueError, TypeError) as e:
+            logger.debug("Error mapping part_to_color record: %s", e)
+            return None
+
+        except Exception as unexpected_error:
+            logger.error(
+                "Unexpected error mapping part_to_color record: %s",
+                unexpected_error
+            )
+            return None
+
+    def _map_configuration_to_transmission(self, record: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """
+        Map configuration_to_transmission junction record (allow-list).
+        
+        Args:
+            record: Dict with configuration, transmission
+        
+        Returns:
+            Dict with configuration_id, transmission_id or None
+        """
+        try:
+            required_cols = MFT_JUNCTION_REQUIRED['configuration_to_transmission']
+            for col in required_cols:
+                if col not in record:
+                    logger.debug(
+                        "Missing required column '%s' in configuration_to_transmission record",
+                        col
+                    )
+                    return None
+
+            configuration_id = self.get_id('configuration', record['configuration'])
+            if not configuration_id:
+                logger.debug(
+                    "No configuration_id found for configuration: %s",
+                    record['configuration']
+                )
+                return None
+
+            transmission_id = self.get_id('transmission', record['transmission'])
+            if not transmission_id:
+                logger.debug(
+                    "No transmission_id found for transmission: %s",
+                    record['transmission']
+                )
+                return None
+
+            return {
+                'configuration_id': configuration_id,
+                'transmission_id': transmission_id
+            }
+
+        except (KeyError, ValueError, TypeError) as e:
+            logger.debug("Error mapping configuration_to_transmission record: %s", e)
+            return None
+
+        except Exception as unexpected_error:
+            logger.error(
+                "Unexpected error mapping configuration_to_transmission record: %s",
+                unexpected_error
+            )
+            return None
+
+
     # ========== MAIN MAPPING METHODS ==========
 
     def get_supplier_mapping(self) -> dict[str, Any]:
@@ -996,6 +1106,20 @@ class MFTObjectMapper:
             self._load_mapping(LineData, 'line_code', 'line_id', cache_key)
         return self._cached_mappings[cache_key]
 
+    def get_color_mapping(self) -> dict[str, Any]:
+        """Get color_code → color_id mapping."""
+        cache_key = "ColorData_color_code"
+        if cache_key not in self._cached_mappings:
+            self._load_mapping(ColorData, 'color_code', 'color_id', cache_key)
+        return self._cached_mappings[cache_key]
+
+    def get_transmission_mapping(self) -> dict[str, Any]:
+        """Get transmission → transmission_id mapping."""
+        cache_key = "TransmissionData_transmission"
+        if cache_key not in self._cached_mappings:
+            self._load_mapping(TransmissionData, 'transmission', 'transmission_id', cache_key)
+        return self._cached_mappings[cache_key]
+
 
     def map_junction_records(
         self,
@@ -1008,7 +1132,8 @@ class MFTObjectMapper:
         Args:
             junction_df: Polars DataFrame with junction table data
             junction_type: Type of junction table to map
-                (part_to_box_composite, box_to_pallet_composite, part_to_model, part_to_line)
+                (part_to_box_composite, box_to_pallet_composite, part_to_model, part_to_line,
+                part_to_color, configuration_to_transmission)
                 
         Returns:
             List of dicts with database IDs ready for insertion
@@ -1034,6 +1159,8 @@ class MFTObjectMapper:
             'box_to_pallet_composite': self._map_box_to_pallet_composite,
             'part_to_model': self._map_part_to_model,
             'part_to_line': self._map_part_to_line,
+            'part_to_color': self._map_part_to_color,
+            'configuration_to_transmission': self._map_configuration_to_transmission,
         }
 
         if junction_type not in handler_map:
@@ -1141,7 +1268,7 @@ def create_mft_mapper(engine=None) -> MFTObjectMapper:
         Mapper MUST be created AFTER core entity tables are loaded.
         
     Example:
-        >>> mapper = create_mapper()
+        >>> mapper = create_mft_mapper()
     """
     try:
         if engine is None:
