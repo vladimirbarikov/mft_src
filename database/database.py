@@ -316,7 +316,8 @@ DATABASE CONSTRAINTS SUMMARY:
           box_height_mm > 0, box_stacking >= 0
         * pallet_weight_kg >= 0, pallet_length_mm > 0, pallet_width_mm > 0,
           pallet_height_mm > 0, pallet_stacking >= 0
-        * part_per_box > 0, box_per_pallet > 0, part_per_vehicle > 0
+        * part_per_box > 0 (or NULL), box_per_pallet > 0 (or NULL),
+          part_per_vehicle > 0 (or NULL)
         * latitude BETWEEN -90 AND 90 (or NULL)
         * longitude BETWEEN -180 AND 180 (or NULL)
         * engine displacement_cc > 0 (or NULL), power_hp > 0 (or NULL)
@@ -350,11 +351,11 @@ DATABASE CONSTRAINTS SUMMARY:
         * production_plan_data.(batch, batch_date) (may repeat within a day)
         * model_data.bom_product_code (one BOM may have several model variants)
 
-Version: 2.0.0
-Compatibility: Python 3.14.4+, SQLAlchemy 1.4.54+, PostgreSQL 12+
+Version: 2.1.0
+Compatibility: Python 3.14.4+, SQLAlchemy 1.4.54+, PostgreSQL 13+
 Maintainer: PLD Engineering Center
 Created: 2026-01-16
-Last Modified: 2026-11-10
+Last Modified: 2026-11-23
 License: MIT
 Status: Production
 """
