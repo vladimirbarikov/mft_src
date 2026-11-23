@@ -19,7 +19,7 @@ xlrd>=2.0.2
 oletools>=0.60.2
 
 # ========== Database ==========
-SQLAlchemy>=1.4.54
+SQLAlchemy>=1.4.54,<2.0
 SQLAlchemy-Utils>=0.42.0
 psycopg2-binary==2.9.11
 
