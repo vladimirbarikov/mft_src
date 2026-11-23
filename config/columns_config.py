@@ -130,7 +130,7 @@ JUNCTION TABLES COLUMNS (UPPERCASE for Excel extraction):
           BOX_PER_PALLET
 
     PART_TO_MODEL_COLS: Part-to-model junction
-        - PART_NUMBER, BOM_PRODUCT_CODE, CONFIGURATION, PART_PER_VEHICLE
+        - PART_NUMBER, MODEL_CODE, CONFIGURATION, PART_PER_VEHICLE
 
     PART_TO_LINE_COLS: Part-to-line junction
         - PART_NUMBER, LINE_CODE
@@ -160,7 +160,7 @@ MFT PIPELINE CONFIGURATION (for mft_dag.py, mft_mapper.py, mft_loader.py)
         - box_to_pallet_composite: part_number, box_type, box_length_mm,
           box_width_mm, box_height_mm, pallet_type, pallet_length_mm,
           pallet_width_mm, pallet_height_mm
-        - part_to_model: part_number, bom_product, configuration
+        - part_to_model: part_number, model_code, configuration
         - part_to_line: part_number, line_code
         - part_to_color: part_number, color_code
         - configuration_to_transmission: configuration, transmission
@@ -281,10 +281,10 @@ ARCHITECTURE NOTES:
           without schema migration
 
 Version: 2.0.0
-Compatibility: Python 3.12.3
+Compatibility: Python 3.14.4
 Maintainer: PLD Engineering Center
 Created: 2026-02-16
-Last Modified: 2026-11-10
+Last Modified: 2026-11-23
 License: MIT
 Status: Production
 """
@@ -403,7 +403,7 @@ BOX_TO_PALLET_COMPOSITE_COLS: list[str] = [
 # Part-to-Model junction columns
 PART_TO_MODEL_COLS: list[str] = [
     'PART_NUMBER',
-    'BOM_PRODUCT_CODE',
+    'MODEL_CODE',
     'CONFIGURATION',
     'PART_PER_VEHICLE',
 ]
@@ -445,7 +445,7 @@ MFT_JUNCTION_REQUIRED: dict[str, list[str]] = {
     ],
     'part_to_model': [
         'part_number',
-        'bom_product_code',
+        'model_code',
         'configuration'
     ],
     'part_to_line': [
