@@ -12,7 +12,7 @@ DATABASE ENUM TYPES, MODELS AND TABLES:
     - PACKAGING_TYPE_ENUM:
         - returnable/non-returnable - Packaging type.
         - no data - if no information about Packaging type.
-    - BOM_PRODUCT_ENUM:
+    - BOM_PRODUCT_CODE_ENUM:
         - a01g-r-bom, a08-r-bom, b02-r-bom, b04-r-bom, b06-r-bom, b16-r-bom - BOM product codes.
         - no data - if no information about BOM product.
     - MODEL_NAMES_ENUM:
@@ -39,7 +39,7 @@ DATABASE ENUM TYPES, MODELS AND TABLES:
     - part_data                  - Data about automotive components (parts)
     - box_data                   - Packaging box specifications
     - pallet_data                - Pallet (platform) specifications
-    - model_data                 - Vehicle models (bom_product + model_code)
+    - model_data                 - Vehicle models (bom_product_code + model_code)
     - configuration_data         - Vehicle configuration types (comfort, elite, etc.)
     - transmission_data          - Transmission / drivetrain specifications (4x4, 4x2, etc.)
     - color_data                 - Color master data (for parts)
@@ -48,6 +48,7 @@ DATABASE ENUM TYPES, MODELS AND TABLES:
     - line_data                  - Production lines
     - breakpoint_data            - Technical changes (breakpoints)
     - breakpoint_checklist_data  - Breakpoint checklist answers (1:1 with breakpoint_data)
+    - notification_data          - Breakpoint notifications and related PDF documents
     - batch_data                 - Production batches (from configuration Excel)
     - department_data            - Company departments
     - user_role_data             - Application-level roles (mapped to PostgreSQL roles)
@@ -77,6 +78,7 @@ STORED INFORMATION:
 2. PARTS (part_data):
    - Identifiers: PART_ID, PART_NUMBER
    - Description: name, weight (kg) with CheckConstraint (>= 0)
+   - Drawing/photo: optional binary file (image or PDF)
    - Supplier relationship (ForeignKey with RESTRICT on delete)
    - Color: M:N via part_to_color (one part may exist in several colors)
    - Versioning: original_part_id, version_number
@@ -121,7 +123,7 @@ STORED INFORMATION:
      b06-r-bom, b16-r-bom, no data
    - Model codes (e.g. CC6460AB26B) — unique business key of a model variant
    - Model names: jolion, h3, f7, f7x, dargo, h7, no data
-   - NOTE: bom_product is NOT unique: one BOM product may have several
+   - NOTE: bom_product_code is NOT unique: one BOM product code may have several
      model_code variants (e.g. A01G-R-BOM → CC7150BA24C, CC6450BA26B, ...)
    - Uniqueness is guaranteed by model_code
 
@@ -221,11 +223,24 @@ STORED INFORMATION:
     - All answer fields nullable: NULL means "not answered yet"
     - "confirmed" flags default False (task not done yet)
 
+15. BREAKPOINT NOTIFICATIONS (notification_data):
+    - One-to-one with breakpoint_data (one BP has at most one notification)
+    - notification_date: creation date of the notification document
+    - unproduced_batches_note: manually entered information about batches
+      not produced before the breakpoint
+    - source_file: original notification document in PDF format
+    - approved_file: notification document signed by responsible departments
+    - feedback_file: feedback document in PDF format
+    - PDF files are optional and stored as binary data (BYTEA)
+    - PDF format and file size are validated at the application layer
+    - created_at / updated_at: technical record timestamps
+    - created_by_user_id / updated_by_user_id: record audit users
+
 IMPLEMENTATION FEATURES:
     - UUID format: 32 hexadecimal characters + 4 hyphens = 36 characters total
     - Automatic ID generation with prefixes:
         SUP_, PRT_, BOX_, PLT_, MDL_, CFG_, TRN_, CLR_, WSP_, LNE_, BPT_,
-        BCH_, CHK_, ENG_, DEP_, ROL_, USR_, PLN_, PLD_
+        NTF_, BCH_, CHK_, ENG_, DEP_, ROL_, USR_, PLN_, PLD_
     - All ID fields use format: PREFIX_ + UUID = 40 characters total
     - Business rule validation through CheckConstraint:
         * Positive values for dimensions, weights, quantities
@@ -262,6 +277,7 @@ RELATIONSHIP STRUCTURE:
     - Part (N) ↔ (N) Line (N) ↔ (1) Workshop
     - Part (N) ↔ (N) Breakpoint (change history) with model+configuration versions
     - Breakpoint (1) ↔ (1) BreakpointChecklist (checklist answers, cascade delete)
+    - Breakpoint (1) ↔ (1) Notification (notification documents, cascade delete)
     - Each PartToBreakpoint links new_part and old_part versions for a specific
       model and configuration
     - Configuration (1) ↔ (N) PartToModel (N) ↔ (1) Model
@@ -312,7 +328,7 @@ DATABASE CONSTRAINTS SUMMARY:
         * (part_number, version_number) on part_data
         * (box_type, box_length_mm, box_width_mm, box_height_mm) on box_data
         * (pallet_type, pallet_length_mm, pallet_width_mm, pallet_height_mm) on pallet_data
-        * bom_product (removed in v2.0 — multiple model_code per BOM allowed)
+        * bom_product_code (no UNIQUE constraint — multiple model_code per BOM allowed)
         * model_code, model_name on model_data
         * configuration on configuration_data
         * transmission on transmission_data
@@ -322,6 +338,7 @@ DATABASE CONSTRAINTS SUMMARY:
         * line_code on line_data
         * breakpoint_number on breakpoint_data
         * breakpoint_id on breakpoint_checklist_data (one-to-one)
+        * breakpoint_id on notification_data (one-to-one)
         * batch_code on batch_data
         * (new_part_id, breakpoint_id, model_id, configuration_id) on part_to_breakpoint
         * department_code, department_name on department_data
@@ -331,7 +348,7 @@ DATABASE CONSTRAINTS SUMMARY:
     - NOT UNIQUE by design:
         * production_plan_data.batch (may repeat across records)
         * production_plan_data.(batch, batch_date) (may repeat within a day)
-        * model_data.bom_product (one BOM may have several model variants)
+        * model_data.bom_product_code (one BOM may have several model variants)
 
 Version: 2.0.0
 Compatibility: Python 3.14.4+, SQLAlchemy 1.4.54+, PostgreSQL 12+
@@ -347,7 +364,7 @@ from sqlalchemy import (
     ForeignKey, func, Index, text, UniqueConstraint
 )
 from sqlalchemy.types import (
-    Boolean, Integer, Numeric, String, SmallInteger, Text
+    Boolean, Integer, LargeBinary, Numeric, String, SmallInteger, Text
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
@@ -369,9 +386,9 @@ PACKAGING_TYPE_ENUM = SqlEnum(
     name='packaging_type'
 )
 
-BOM_PRODUCT_ENUM = SqlEnum(
+BOM_PRODUCT_CODE_ENUM = SqlEnum(
     'a01g-r-bom', 'a08-r-bom', 'b02-r-bom', 'b04-r-bom', 'b06-r-bom', 'b16-r-bom', 'no data',
-    name='product_code'
+    name='bom_product_code'
 )
 
 MODEL_NAMES_ENUM = SqlEnum(
@@ -558,6 +575,7 @@ class PartData(Base):
             - part_number: Business number (99999AAA999 format)
             - part_name: Technical description
             - part_weight_kg: Weight in kilograms (precision 0.01)
+            - part_drawing: Optional binary photo or PDF drawing of the part
             - supplier_id: References supplier_data
             - is_active: Computed property - True if part has at least one active model association
             - deactivated_by_breakpoint_id: Which breakpoint caused deactivation
@@ -607,6 +625,11 @@ class PartData(Base):
         Numeric(5, 2),
         CheckConstraint('part_weight_kg >= 0'),
         nullable=True
+    )
+    part_drawing = Column(
+        LargeBinary,
+        nullable=True,
+        comment="Optional binary photo or PDF drawing of the part"
     )
     supplier_id = Column(
         String(40),
@@ -1168,14 +1191,16 @@ class ModelData(Base):
     __table_args__ = (
         Index('idx_model_code', 'model_code'),
         Index('idx_model_name', 'model_name'),
-        Index('idx_model_bom_product', 'bom_product'),
+        Index('idx_model_bom_product_code', 'bom_product_code'),
         {
             'comment': """
             PURPOSE: Vehicle model master data
             ---
             COLUMN DESCRIPTION:
             - model_id: Unique system identifier (MDL_ + 36-character UUID)
-            - model_code: Platform codes (A01, B02, etc.)
+            - bom_product_code: Code from BOM (Bill of Materials),
+              e.g. a01g-r-bom, a08-r-bom, b02-r-bom
+            - model_code: Unique model variant code (e.g. CC6460AB26B)
             - model_name: Marketing names (Jolion, H3, etc.)
             ---
             RELATIONSHIPS:
@@ -1184,6 +1209,9 @@ class ModelData(Base):
             BUSINESS RULES:
             - Model codes follow platform-generation-variant pattern
             - Used for BOM (Bill of Materials) configuration
+            - bom_product_code is NOT unique: one BOM product code may have
+              several model_code variants
+            - Uniqueness of a model variant is guaranteed by model_code
             ---
             AUDIT:
             - created_at: When the record was created
@@ -1200,8 +1228,8 @@ class ModelData(Base):
         unique=True,
         nullable=False
     )
-    bom_product = Column(
-        BOM_PRODUCT_ENUM,
+    bom_product_code = Column(
+        BOM_PRODUCT_CODE_ENUM,
         nullable=False
         )
     model_code = Column(
@@ -2153,12 +2181,146 @@ class BreakpointData(Base):
         back_populates='deactivation_breakpoint',
         lazy='select'
     )
+    notification = relationship(
+        'NotificationData',
+        back_populates='breakpoint',
+        uselist=False,
+        lazy='joined',
+        cascade='all, delete-orphan'
+    )
     checklist = relationship(
         'BreakpointChecklistData',
         back_populates='breakpoint',
         uselist=False,
         lazy='joined',
         cascade='all, delete-orphan'
+    )
+    created_by = relationship(
+        'UserData',
+        foreign_keys=[created_by_user_id],
+        lazy='select'
+    )
+    updated_by = relationship(
+        'UserData',
+        foreign_keys=[updated_by_user_id],
+        lazy='select'
+    )
+
+
+class NotificationData(Base):
+    '''
+    Model defines a table for storing breakpoint notification documents.
+    '''
+    __tablename__ = 'notification_data'
+    __table_args__ = (
+        Index('idx_notification_date', 'notification_date'),
+        Index('idx_notification_created_at', 'created_at'),
+        {
+            'comment': """
+            PURPOSE: Breakpoint notification metadata and PDF documents
+            ---
+            COLUMN DESCRIPTION:
+            - notification_id: Unique system identifier
+              (NTF_ + 36-character UUID)
+            - breakpoint_id: References breakpoint_data; unique one-to-one link
+            - notification_date: Creation date of the notification document
+            - unproduced_batches_note: Manually entered information about
+              batches not produced before the breakpoint
+            - source_file: Original notification document in PDF format
+            - approved_file: Notification document signed by responsible
+              departments in PDF format
+            - feedback_file: Feedback document in PDF format
+            ---
+            RELATIONSHIPS:
+            - One-to-One with: BreakpointData
+            - Many-to-One with: UserData (created_by / updated_by)
+            ---
+            BUSINESS RULES:
+            - One breakpoint may have at most one notification
+            - notification_date is the document date, while created_at is
+              the technical record creation timestamp
+            - PDF files are optional and stored as binary data (BYTEA)
+            - PDF format and file size are validated at the application layer
+            - Files should be downloaded separately from notification lists
+            ---
+            AUDIT:
+            - created_at: When the record was created
+            - updated_at: When the record was last updated
+            - created_by_user_id: User who created the record
+            - updated_by_user_id: User who last updated the record
+            """
+        },
+    )
+
+    notification_id = Column(
+        String(40),
+        primary_key=True,
+        server_default=text("'NTF_' || gen_random_uuid()::text"),
+        unique=True,
+        nullable=False
+    )
+    breakpoint_id = Column(
+        String(40),
+        ForeignKey('breakpoint_data.breakpoint_id', ondelete='CASCADE'),
+        unique=True,
+        nullable=False,
+        comment="One-to-one relationship with BreakpointData"
+    )
+    notification_date = Column(
+        Date,
+        nullable=False,
+        comment="Creation date of the notification document"
+    )
+    unproduced_batches_note = Column(
+        Text,
+        nullable=True,
+        comment="Manually entered information about unproduced batches"
+    )
+
+    # PDF documents
+    source_file = Column(
+        LargeBinary,
+        nullable=True,
+        comment="Original notification document in PDF format"
+    )
+    approved_file = Column(
+        LargeBinary,
+        nullable=True,
+        comment="Notification document signed by responsible departments in PDF format"
+    )
+    feedback_file = Column(
+        LargeBinary,
+        nullable=True,
+        comment="Feedback document in PDF format"
+    )
+
+    # Audit fields
+    created_at = Column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at = Column(
+        DateTime,
+        nullable=True,
+        onupdate=func.now()
+    )
+    created_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+    updated_by_user_id = Column(
+        String(40),
+        ForeignKey('user_data.user_id', ondelete='SET NULL'),
+        nullable=True
+    )
+
+    # Relationships
+    breakpoint = relationship(
+        'BreakpointData',
+        back_populates='notification',
+        lazy='joined'
     )
     created_by = relationship(
         'UserData',
@@ -2949,7 +3111,7 @@ class ProductionPlanData(Base):
             - batch_date: Date of this plan record (from Excel)
             - workshop_id: Workshop where the batch is produced
             - flow_direction: 'in' or 'out' - which workshop flow this line belongs to
-            - model_id: Vehicle model (includes bom_product + model_code)
+            - model_id: Vehicle model (includes bom_product_code + model_code)
             - configuration_id: Vehicle configuration (comfort, elite, ...)
             - engine_id: Engine used in the batch
             - transmission_id: Transmission used in the batch
@@ -3024,7 +3186,7 @@ class ProductionPlanData(Base):
         String(40),
         ForeignKey('model_data.model_id', ondelete='RESTRICT'),
         nullable=False,
-        comment="Vehicle model (bom_product + model_code are in ModelData)"
+        comment="Vehicle model (bom_product_code + model_code are in ModelData)"
     )
     configuration_id = Column(
         String(40),
@@ -4100,7 +4262,7 @@ class BatchToVehicle(Base):
               (e.g. RAS with GW4B15D and with GW4B15L)
             - The set (model, configuration, transmission, engine) describes
               exactly one vehicle variant of the batch
-            - ModelData identifies the variant via (bom_product, model_code)
+            - ModelData identifies the variant via (bom_product_code, model_code)
             - No per-combination quantities are stored here: Excel only
               provides the total batch quantity in BatchData
             """
