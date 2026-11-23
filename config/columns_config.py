@@ -41,7 +41,7 @@ CORE ENTITY TABLES COLUMNS (UPPERCASE for Excel extraction):
           PALLET_HEIGHT_MM, PALLET_STACKING
 
     MODEL_COLS: Columns for model entity table
-        - BOM_PRODUCT_CODE (maps to ModelData.bom_product),
+        - BOM_PRODUCT_CODE (maps to ModelData.bom_product_code),
           MODEL_CODE (maps to ModelData.model_code),
           MODEL_NAME
 
@@ -445,7 +445,7 @@ MFT_JUNCTION_REQUIRED: dict[str, list[str]] = {
     ],
     'part_to_model': [
         'part_number',
-        'bom_product',
+        'bom_product_code',
         'configuration'
     ],
     'part_to_line': [
@@ -507,7 +507,7 @@ MFT_TABLE_REQUIREMENTS: dict[str, list[str]] = {
         'pallet_stacking'
     ],
     'model_data': [
-        'bom_product',
+        'bom_product_code',
         'model_code',
         'model_name'
     ],
@@ -673,7 +673,7 @@ BP_JUNCTION_REQUIRED: dict[str, list[str]] = {
         'part_no_before',
         'part_no_after',
         'bp_no',
-        'bom_product_code'
+        'bom_product_code',
         'configuration',
     ]
 }
