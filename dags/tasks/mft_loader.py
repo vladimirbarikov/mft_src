@@ -464,10 +464,10 @@ def _process_dependent_entity_with_mapper(
                 result_df = result_df.with_columns(pl.Series('supplier_id', supplier_ids))
                 result_df = result_df.drop('supplier_name')
 
-        # MFT pipeline always loads first versions of parts;
-        # ensure version_number is present for NOT NULL constraint
-        if 'version_number' not in result_df.columns:
-            result_df = result_df.with_columns(pl.lit(1).alias('version_number'))
+            # MFT pipeline always loads first versions of parts;
+            # ensure version_number is present for NOT NULL constraint
+            if 'version_number' not in result_df.columns:
+                result_df = result_df.with_columns(pl.lit(1).alias('version_number'))
 
         # Log warnings about null foreign keys
         if null_count > 0:
