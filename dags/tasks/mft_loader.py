@@ -37,6 +37,8 @@ Loading Architecture:
         - box_to_pallet: Links boxes to pallets (many-to-many)
         - part_to_model: Links parts to model configurations
         - part_to_line: Links parts to production lines
+        - part_to_color: Links parts to color
+        - configuration_to_transmission: Links configuration to transmission 
 
 Database Operations:
     - Uses PostgreSQL's ON CONFLICT DO NOTHING for idempotent inserts
@@ -54,8 +56,8 @@ Error Handling Strategy:
 Dependencies:
     - SQLAlchemy 1.4.54+: Database ORM and connection management
     - Polars: DataFrame operations and data manipulation
-    - PostgreSQL 12+: Target database with full constraint support
-    - mapper.py: ID resolution and mapping service
+    - PostgreSQL 13+: Target database with full constraint support
+    - mft_mapper.py: ID resolution and mapping service
     - config.columns_config: Table schema validation rules
 
 Module Functions:
@@ -120,9 +122,9 @@ Logging:
 
 Maintainer: PLD Engineering Center
 Version: 1.0.0
-Compatibility: Python 3.14.4+, SQLAlchemy 1.4.54+, PostgreSQL 12+
+Compatibility: Python 3.14.4+, SQLAlchemy 1.4.54+, PostgreSQL 13+
 Created: 2026-01-12
-Last Modified: 2025-03-20
+Last Modified: 2026-11-24
 License: MIT
 Status: Production
 """
@@ -155,9 +157,11 @@ from dags.tasks.mft_mapper import MFTObjectMapper, create_mft_mapper
 from database.database import (
     # Entity tables
     SupplierData, PartData, BoxData, PalletData,
-    ModelData, ConfigurationData, WorkshopData, LineData,
+    ModelData, ConfigurationData, WorkshopData,
+    LineData, TransmissionData, ColorData,
     # Junction tables
-    PartToBox, BoxToPallet, PartToModel, PartToLine
+    PartToBox, BoxToPallet, PartToModel, PartToLine,
+    PartToColor, ConfigurationToTransmission
 )
 
 # Logger setup
@@ -280,13 +284,15 @@ def _bulk_insert_dataframe(
             'part_to_box': 'part_to_box_pkey',
             'box_to_pallet': 'box_to_pallet_pkey',
             'part_to_model': 'part_to_model_pkey',
-            'part_to_line': 'part_to_line_pkey'
+            'part_to_line': 'part_to_line_pkey',
+            'part_to_color': 'part_to_color_pkey',
+            'configuration_to_transmission': 'configuration_to_transmission_pkey'
         }
 
         # Mapping for unique constraints core entity tables
         core_table_unique_constraints = {
             'supplier_data': ['supplier_name'],
-            'part_data': ['part_number'],
+            'part_data': ['part_number', 'version_number'],
             'model_data': ['model_code'],
             'configuration_data': ['configuration'],
             'workshop_data': ['workshop_code'],
@@ -458,6 +464,11 @@ def _process_dependent_entity_with_mapper(
                 result_df = result_df.with_columns(pl.Series('supplier_id', supplier_ids))
                 result_df = result_df.drop('supplier_name')
 
+        # MFT pipeline always loads first versions of parts;
+        # ensure version_number is present for NOT NULL constraint
+        if 'version_number' not in result_df.columns:
+            result_df = result_df.with_columns(pl.lit(1).alias('version_number'))
+
         # Log warnings about null foreign keys
         if null_count > 0:
             logger.warning(
@@ -607,6 +618,18 @@ def load_core_entity_tables(
                 'workshop_data',
                 'workshop_code'
             ),
+            (
+                'transformed_transmission_df',
+                TransmissionData,
+                'transmission_data',
+                'transmission'
+            ),
+            (
+                'transformed_color_df',
+                ColorData,
+                'color_data',
+                'color_code'
+            ),
         ]
 
         # Mapping for unique constraints (to transfer into _bulk_insert_dataframe)
@@ -616,7 +639,9 @@ def load_core_entity_tables(
             'pallet_data': ['pallet_type', 'pallet_length_mm', 'pallet_width_mm', 'pallet_height_mm'],
             'model_data': ['model_code'],
             'configuration_data': ['configuration'],
-            'workshop_data': ['workshop_code']
+            'workshop_data': ['workshop_code'],
+            'transmission_data': ['transmission'],
+            'color_data': ['color_code']
         }
 
         disable_foreign_keys(engine)
@@ -657,9 +682,7 @@ def load_core_entity_tables(
             results[table_name] = records_loaded
 
         # Commit loading independent tables so mapper can see the data
-        logger.info("Committing loading independent tables transactions...")
-        with engine.begin() as connection:
-            connection.execute(text("COMMIT"))
+        logger.info("Independent tables committed; creating mapper for dependent tables...")
 
         enable_foreign_keys(engine)
 
@@ -698,7 +721,7 @@ def load_core_entity_tables(
 
             conflict_columns_dependent = {
                 'line_data': ['line_code'],
-                'part_data': ['part_number']
+                'part_data': ['part_number', 'version_number']
             }
 
             disable_foreign_keys(engine)
@@ -834,33 +857,40 @@ def _prepare_junction_dataframes(
     Relies on mapper.map_junction_records() for all validation and processing,
     eliminating duplicate validation logic.
     """
-    mapped_data = {}
+    mapped_data: dict[str, Any] = {}
 
     # Mapping between DataFrame keys and mapper junction types
-    junction_type_mapping = {
+    junction_type_mapping: dict[str, str] = {
         'part_to_box': 'part_to_box_composite',
         'box_to_pallet': 'box_to_pallet_composite',
         'part_to_model': 'part_to_model',
-        'part_to_line': 'part_to_line'
+        'part_to_line': 'part_to_line',
+        'part_to_color': 'part_to_color',
+        'configuration_to_transmission': 'configuration_to_transmission'
     }
 
     # Model class mapping
-    model_class_map = {
+    model_class_map: dict[str, Any] = {
         'part_to_box_composite': PartToBox,
         'box_to_pallet_composite': BoxToPallet,
         'part_to_model': PartToModel,
-        'part_to_line': PartToLine
+        'part_to_line': PartToLine,
+        'part_to_color': PartToColor,
+        'configuration_to_transmission': ConfigurationToTransmission
     }
 
     # Deduplication configuration
-    deduplication_config = {
+    deduplication_config: dict[str, list[str]] = {
         'part_to_box_composite': ['part_id', 'box_id'],
         'box_to_pallet_composite': ['part_id', 'box_id', 'pallet_id'],
         'part_to_model': ['part_id', 'model_id', 'configuration_id'],
-        'part_to_line': ['part_id', 'line_id']
+        'part_to_line': ['part_id', 'line_id'],
+        'part_to_color': ['part_id', 'color_id'],
+        'configuration_to_transmission': ['configuration_id', 'transmission_id']
     }
 
-    for df_key in ['part_to_box', 'box_to_pallet', 'part_to_model', 'part_to_line']:
+    for df_key in ['part_to_box', 'box_to_pallet', 'part_to_model', 'part_to_line',
+                   'part_to_color', 'configuration_to_transmission']:
         if df_key not in junction_dict:
             logger.debug("Missing junction DataFrame: %s", df_key)
             continue
@@ -975,7 +1005,10 @@ def load_junction_tables(
                 'part_data': "SELECT COUNT(*) FROM part_data",
                 'box_data': "SELECT COUNT(*) FROM box_data",
                 'model_data': "SELECT COUNT(*) FROM model_data",
-                'line_data': "SELECT COUNT(*) FROM line_data"
+                'line_data': "SELECT COUNT(*) FROM line_data",
+                'configuration_data': "SELECT COUNT(*) FROM configuration_data",
+                'color_data': "SELECT COUNT(*) FROM color_data",
+                'transmission_data': "SELECT COUNT(*) FROM transmission_data"
             }
 
             missing_tables = []
@@ -1052,7 +1085,9 @@ def load_junction_tables(
             ('models', mapper.get_model_mapping),
             ('configurations', mapper.get_configuration_mapping),
             ('workshops', mapper.get_workshop_mapping),
-            ('lines', mapper.get_line_mapping)
+            ('lines', mapper.get_line_mapping),
+            ('colors', mapper.get_color_mapping),
+            ('transmissions', mapper.get_transmission_mapping)
         ]
 
         empty_mappings = []
@@ -1108,7 +1143,10 @@ def load_junction_tables(
             return {}
 
         # Load sequence
-        load_sequence = ['part_to_box', 'box_to_pallet', 'part_to_model', 'part_to_line']
+        load_sequence: list[str] = [
+            'part_to_box', 'box_to_pallet', 'part_to_model', 'part_to_line',
+            'part_to_color', 'configuration_to_transmission'
+        ]
 
         for df_key in load_sequence:
             if df_key not in mapped_data:
