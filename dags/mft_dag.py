@@ -29,6 +29,8 @@ Data Entities Processed:
 Key Features:
     - Parallel extraction of specialized datasets from source Excel
     - Comprehensive data transformation with type conversion and cleaning
+    - ENUM validation against database ENUM types via enum_validate_all()
+      (invalid values are replaced with 'no data' fallback)
     - Referential integrity preservation through proper load sequencing
     - Composite key handling for dimensional entities (boxes, pallets)
     - Extensive logging and error handling throughout the pipeline
@@ -74,11 +76,11 @@ Integration with Upload API:
     - file_size: Size in bytes
     - sheets: List of sheets in file
 
-Version: 2.1.0
+Version: 2.2.0
 Compatibility: Python 3.14.4+, Apache Airflow 3.0.6+
 Maintainer: PLD Engineering Center
 Created: 2025-01-19
-Last Modified: 2026-11-24
+Last Modified: 2026-11-25
 Status: Production Ready
 License: MIT
 """
@@ -154,7 +156,7 @@ def mft_etl_pipeline():
     Processing Flow:
         1. Extract main DataFrame from file at file_path
         2. Create specialized DataFrames for each entity
-        3. Transform and clean all DataFrames
+        3. Transform and clean all DataFrames (including ENUM validation)
         4. Load core entities in correct dependency order
         5. Load junction tables
         6. Validate data integrity
@@ -904,6 +906,7 @@ def mft_etl_pipeline():
             advanced_clean_text,
             pinyin_conversion
         )
+        from dags.tasks.enum_validator import enum_validate_all  # pylint: disable=import-outside-toplevel
 
         logger.info(
             "Transforming supplier data..."
@@ -935,6 +938,9 @@ def mft_etl_pipeline():
         # Apply converting and basic cleaning text to LOCALIZATION as it is ENUM ('yes', 'no')
         supplier_df = convert_to_string(supplier_df, 'LOCALIZATION')
         supplier_df = basic_clean_text(supplier_df, 'LOCALIZATION')
+
+        # Validate ENUM columns (LOCALIZATION) against database ENUM values
+        supplier_df = enum_validate_all(supplier_df)
 
         # Removing duplicates across all SUPPLIER_COLS
         transformed_supplier_df = supplier_df.unique(subset=SUPPLIER_COLS, keep='first')
@@ -1060,6 +1066,7 @@ def mft_etl_pipeline():
             convert_to_float,
             basic_clean_text
         )
+        from dags.tasks.enum_validator import enum_validate_all  # pylint: disable=import-outside-toplevel
 
         logger.info(
             "Transforming box data..."
@@ -1077,6 +1084,9 @@ def mft_etl_pipeline():
         # Apply converting and cleaninig text
         box_df = convert_to_string(box_df, 'BOX_TYPE')
         box_df = basic_clean_text(box_df, 'BOX_TYPE')
+
+        # Validate ENUM columns (BOX_TYPE) against database ENUM values
+        box_df = enum_validate_all(box_df)
 
         # Apply converting to Int64
         int_cols = [
@@ -1140,6 +1150,7 @@ def mft_etl_pipeline():
             convert_to_float,
             basic_clean_text
         )
+        from dags.tasks.enum_validator import enum_validate_all  # pylint: disable=import-outside-toplevel
 
         logger.info(
             "Transforming pallet data..."
@@ -1157,6 +1168,9 @@ def mft_etl_pipeline():
         # Apply converting and cleaninig text
         pallet_df = convert_to_string(pallet_df, 'PALLET_TYPE')
         pallet_df = basic_clean_text(pallet_df, 'PALLET_TYPE')
+
+        # Validate ENUM columns (PALLET_TYPE) against database ENUM values
+        pallet_df = enum_validate_all(pallet_df)
 
         # Apply converting to Int64
         int_cols = [
@@ -1218,6 +1232,7 @@ def mft_etl_pipeline():
             convert_to_string,
             basic_clean_text
         )
+        from dags.tasks.enum_validator import enum_validate_all  # pylint: disable=import-outside-toplevel
 
         logger.info(
             "Transforming model data..."
@@ -1236,6 +1251,9 @@ def mft_etl_pipeline():
         for col in MODEL_COLS:
             model_df = convert_to_string(model_df, col)
             model_df = basic_clean_text(model_df, col)
+
+        # Validate ENUM columns (BOM_PRODUCT_CODE, MODEL_NAME) against database ENUM values
+        model_df = enum_validate_all(model_df)
 
         # Drop placeholder rows until real model codes are provided
         model_df = model_df.filter(pl.col('MODEL_CODE') != 'no data')
@@ -1286,6 +1304,7 @@ def mft_etl_pipeline():
             convert_to_string,
             basic_clean_text
         )
+        from dags.tasks.enum_validator import enum_validate_all  # pylint: disable=import-outside-toplevel
 
         logger.info(
             "Transforming configuration data..."
@@ -1306,7 +1325,10 @@ def mft_etl_pipeline():
 
         # Apply cleaning text
         configuration_df = basic_clean_text(configuration_df, 'CONFIGURATION')
-        configuration_df = basic_clean_text(configuration_df, 'TRANSMISSION')
+
+        # Validate ENUM columns (CONFIGURATION) against database ENUM values;
+        # NULL/invalid values become 'no data' and are dropped by the filter below
+        configuration_df = enum_validate_all(configuration_df)
 
         # Drop placeholder rows until real configurations are provided
         configuration_df = configuration_df.filter(pl.col('CONFIGURATION') != 'no data')
@@ -1359,6 +1381,7 @@ def mft_etl_pipeline():
             convert_to_string,
             basic_clean_text
         )
+        from dags.tasks.enum_validator import enum_validate_all  # pylint: disable=import-outside-toplevel
 
         logger.info(
             "Transforming workshop data..."
@@ -1377,6 +1400,9 @@ def mft_etl_pipeline():
         for col in WORKSHOP_COLS:
             workshop_df = convert_to_string(workshop_df, col)
             workshop_df = basic_clean_text(workshop_df, col)
+
+        # Validate ENUM columns (WORKSHOP_CODE, WORKSHOP_NAME) against database ENUM values
+        workshop_df = enum_validate_all(workshop_df)
 
         # Removing duplicates across all WORKSHOP_COLS
         transformed_workshop_df = workshop_df.unique(subset=WORKSHOP_COLS, keep='first')
@@ -1424,6 +1450,7 @@ def mft_etl_pipeline():
             convert_to_string,
             basic_clean_text
         )
+        from dags.tasks.enum_validator import enum_validate_all  # pylint: disable=import-outside-toplevel
 
         logger.info(
             "Transforming line data..."
@@ -1442,6 +1469,9 @@ def mft_etl_pipeline():
         for col in LINE_COLS:
             line_df = convert_to_string(line_df, col)
             line_df = basic_clean_text(line_df, col)
+
+        # Validate ENUM columns (WORKSHOP_CODE) against database ENUM values
+        line_df = enum_validate_all(line_df)
 
         # Removing duplicates across all LINE_COLS
         transformed_line_df = line_df.unique(subset=LINE_COLS, keep='first')
@@ -1626,6 +1656,7 @@ def mft_etl_pipeline():
             convert_to_string,
             basic_clean_text
         )
+        from dags.tasks.enum_validator import enum_validate_all  # pylint: disable=import-outside-toplevel
 
         logger.info("Transforming Part-to-Box junction data...")
 
@@ -1641,6 +1672,9 @@ def mft_etl_pipeline():
             for col in ['PART_NUMBER', 'BOX_TYPE']:
                 df = convert_to_string(df, col)
                 df = basic_clean_text(df, col)
+
+            # Validate ENUM columns (BOX_TYPE) against database ENUM values
+            df = enum_validate_all(df)
 
             # Apply converting to Int64
             for col in ['BOX_LENGTH_MM', 'BOX_WIDTH_MM', 'BOX_HEIGHT_MM', 'PART_PER_BOX']:
@@ -1675,6 +1709,7 @@ def mft_etl_pipeline():
             convert_to_string,
             basic_clean_text
         )
+        from dags.tasks.enum_validator import enum_validate_all  # pylint: disable=import-outside-toplevel
 
         logger.info("Transforming Box-to-Pallet junction data...")
 
@@ -1688,6 +1723,9 @@ def mft_etl_pipeline():
             for col in ['PART_NUMBER', 'BOX_TYPE', 'PALLET_TYPE']:
                 df = convert_to_string(df, col)
                 df = basic_clean_text(df, col)
+
+            # Validate ENUM columns (BOX_TYPE, PALLET_TYPE) against database ENUM values
+            df = enum_validate_all(df)
 
             for col in ['BOX_LENGTH_MM', 'BOX_WIDTH_MM', 'BOX_HEIGHT_MM',
                         'PALLET_LENGTH_MM', 'PALLET_WIDTH_MM', 'PALLET_HEIGHT_MM',
@@ -1722,6 +1760,7 @@ def mft_etl_pipeline():
             convert_to_string,
             basic_clean_text
         )
+        from dags.tasks.enum_validator import enum_validate_all  # pylint: disable=import-outside-toplevel
 
         logger.info("Transforming Part-to-Model junction data...")
 
@@ -1735,6 +1774,9 @@ def mft_etl_pipeline():
             for col in ['PART_NUMBER', 'MODEL_CODE', 'CONFIGURATION']:
                 df = convert_to_string(df, col)
                 df = basic_clean_text(df, col)
+
+            # Validate ENUM columns (CONFIGURATION) against database ENUM values
+            df = enum_validate_all(df)
 
             df = convert_to_int64(df, 'PART_PER_VEHICLE')
             df = df.unique(subset=PART_TO_MODEL_COLS, keep='first')
@@ -1849,6 +1891,7 @@ def mft_etl_pipeline():
             convert_to_string,
             basic_clean_text
         )
+        from dags.tasks.enum_validator import enum_validate_all  # pylint: disable=import-outside-toplevel
 
         logger.info("Transforming Configuration-to-Transmission junction data...")
 
@@ -1864,6 +1907,9 @@ def mft_etl_pipeline():
             for col in CONFIGURATION_TO_TRANSMISSION_COLS:
                 df = convert_to_string(df, col)
                 df = basic_clean_text(df, col)
+
+            # Validate ENUM columns (CONFIGURATION) against database ENUM values
+            df = enum_validate_all(df)
 
             # Remove duplicates
             df = df.unique(subset=CONFIGURATION_TO_TRANSMISSION_COLS, keep='first')
