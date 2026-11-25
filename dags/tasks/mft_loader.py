@@ -1001,11 +1001,18 @@ def load_junction_tables(
     # Verify core entity tables are loaded
     try:
         with engine.begin() as conn:
+            # Hard requirements: junctions cannot resolve IDs without these
             critical_tables = {
                 'part_data': "SELECT COUNT(*) FROM part_data",
                 'box_data': "SELECT COUNT(*) FROM box_data",
+                'line_data': "SELECT COUNT(*) FROM line_data"
+            }
+
+            # Soft requirements: reference tables may be empty while
+            # source data contains only 'no data' placeholders;
+            # affected junction rows are skipped gracefully by the mapper
+            reference_tables = {
                 'model_data': "SELECT COUNT(*) FROM model_data",
-                'line_data': "SELECT COUNT(*) FROM line_data",
                 'configuration_data': "SELECT COUNT(*) FROM configuration_data",
                 'color_data': "SELECT COUNT(*) FROM color_data",
                 'transmission_data': "SELECT COUNT(*) FROM transmission_data"
@@ -1030,6 +1037,37 @@ def load_junction_tables(
                     missing_tables.append(table_name)
                     logger.debug(
                         "Unexpected error checking table %s: %s",
+                        table_name, unexpected_error
+                    )
+
+            # Reference tables may be empty while the source data contains
+            # only 'no data' placeholders; affected junction rows are
+            # skipped gracefully by the mapper, so this is not fatal
+            for table_name, query in reference_tables.items():
+                try:
+                    result = conn.execute(text(query))
+                    count = result.scalar() if result is not None else 0
+                    if count == 0:
+                        logger.warning(
+                            "Reference table %s is empty (0 records). "
+                            "Junction rows referencing it will be skipped.",
+                            table_name
+                        )
+                    else:
+                        logger.debug(
+                            "Reference table %s has %d records",
+                            table_name, count
+                        )
+
+                except (SQLAlchemyError, ProgrammingError) as e:
+                    logger.warning(
+                        "Could not check reference table %s: %s",
+                        table_name, e
+                    )
+
+                except Exception as unexpected_error:
+                    logger.warning(
+                        "Unexpected error checking reference table %s: %s",
                         table_name, unexpected_error
                     )
 
