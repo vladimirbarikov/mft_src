@@ -1,4 +1,5 @@
 # pylint: disable=too-many-lines
+# pylint: disable=line-too-long
 # pylint: disable=wrong-import-position
 """
 Universal ENUM Validation Module for Material Flow Table Database.
@@ -10,6 +11,8 @@ DAGs during the transformation phase.
 
 Key Features:
     - Database-synchronized validation (ENUM values imported directly from database.py)
+    - Config-driven column mapping (single source of truth:
+      config.columns_config.ENUM_COLUMN_MAPPING, no hardcoded column names)
     - Simple function interface matching existing transformation functions
     - Automatic handling of NULL values, case variations, and whitespace
     - Comprehensive logging with invalid value sampling
@@ -18,24 +21,36 @@ Key Features:
 
 Architecture:
     The module follows a simple functional design pattern:
-    1. ENUM Import: Direct imports from database.py ensure schema synchronization
-    2. Column Mapping: Dictionary maps column names to corresponding ENUM types
+    1. ENUM Resolution: ENUM objects are resolved from database.py by name
+       (getattr), ensuring schema synchronization; an unknown ENUM name
+       produces an explicit startup error instead of a silent skip
+    2. Column Mapping: _COLUMN_TO_ENUM is built from
+       config.columns_config.ENUM_COLUMN_MAPPING, with keys registered
+       in both UPPERCASE and lowercase
     3. Validation Logic: Core validation with cleaning, masking, and replacement
     4. Logging Layer: Detailed DEBUG/INFO/WARNING logging for monitoring
 
 Configuration Source:
-    This module imports ENUM types directly from database.py:
+    ENUM types are resolved by name from database.py (via getattr), based on
+    config.columns_config.ENUM_COLUMN_MAPPING:
         - LOCALIZATION_ENUM: Supplier localization status (yes/no/no data)
         - PACKAGING_TYPE_ENUM: Returnable/non-returnable packaging
-        - BOM_PRODUCT_ENUM: Vehicle platform codes ('a01g-r-bom', 'a08-r-bom', 'b02-r-bom', etc.)
+        - BOM_PRODUCT_CODE_ENUM: Vehicle platform codes ('a01g-r-bom', 'a08-r-bom', 'b02-r-bom', etc.)
         - MODEL_NAMES_ENUM: Vehicle marketing names (jolion, h3, f7, etc.)
         - WORKSHOP_CODES_ENUM: Production workshop codes (as, comp, paint, etc.)
         - WORKSHOP_NAMES_ENUM: Full workshop names (assembly, component, etc.)
-        - CONFIGURATION_ENUM: Vehicle trim levels (comfort, elite, tech-plus, premium)
+        - CONFIGURATION_ENUM: Vehicle trim levels (comfort, elite, tech-plus, premium, s_version)
         - BREAKPOINT_STATUS_ENUM: Engineering change status types (approved, published, closed)
 
 Column Mapping Support:
-    The module supports both MFT and BP pipeline columns:
+    The column-to-ENUM mapping is NOT hardcoded in this module. It is built
+    at import time from config.columns_config.ENUM_COLUMN_MAPPING, the single
+    source of truth for ENUM-backed columns in both pipelines (MFT and BP,
+    including *_AFTER variants). Keys are registered in both UPPERCASE and
+    lowercase, so validation works before and after columns_to_lowercase().
+    Columns without a mapping are skipped with a DEBUG log entry. To add a
+    new ENUM-backed column, update only ENUM_COLUMN_MAPPING in
+    columns_config.py.
     
     MFT Pipeline:
         - LOCALIZATION, localization
@@ -56,31 +71,36 @@ Column Mapping Support:
 Dependencies:
     - Polars for DataFrame operations
     - SQLAlchemy for ENUM access (via database.py)
-    - PostgreSQL 12+ as the target database
+    - PostgreSQL 13+ as the target database
 
 Usage Example:
-    from dags.tasks.enum_validator import enum_validate
+    from dags.tasks.enum_validator import enum_validate, enum_validate_all
 
-    # MFT Pipeline usage
-    df = pl.DataFrame({"LOCALIZATION": ["yes", "no", "invalid", "YES", None]})
-    validated_df = enum_validate(df, "LOCALIZATION")
+    # Single-column usage
+    df = pl.DataFrame({"localization": ["yes", "no", "invalid", "YES", None]})
+    validated_df = enum_validate(df, "localization")
     # Result: ["yes", "no", "no data", "yes", "no data"]
 
-    # BP Pipeline usage
+    # Whole-DataFrame usage (intended for DAG transform tasks):
+    # validates every ENUM-backed column found in the DataFrame
     df = pl.DataFrame({
-        "breakpoint_status": ["approved", "published", "invalid", "closed"],
-        "workshop_before": ["as", "comp", "invalid", "paint"]
+        "status": ["approved", "published", "invalid", "closed"],
+        "workshop_code_after": ["as", "comp", "invalid", "paint"]
     })
-    validated_df = enum_validate(df, "breakpoint_status")
-    validated_df = enum_validate(df, "workshop_before")
+    validated_df = enum_validate_all(df)
     # Invalid values replaced with 'no data'
 
 Integration Notes:
     - Must be used AFTER convert_to_string() and basic_clean_text()
     - Can be used in both MFT and BP pipeline transformation phases
-    - No database connection required (uses imported ENUM definitions only)
-    - Column names are case-sensitive, both UPPERCASE and lowercase supported
-    - BP pipeline columns with _before/_after suffixes are fully supported
+    - Use enum_validate_all(df) in DAG transform tasks to validate all
+      ENUM-backed columns of a DataFrame in one call
+    - No database connection required (ENUM definitions are resolved
+      from database.py at import time)
+    - Column names are matched in both UPPERCASE and lowercase
+    - NULL and empty values are replaced with 'no data' (the ENUM fallback)
+    - BP pipeline *_AFTER columns are supported via ENUM_COLUMN_MAPPING
+      (before-variants are not extracted by the pipeline)
 
 Performance Considerations:
     - Vectorized operations via Polars (no row-by-row loops)
@@ -95,11 +115,11 @@ Error Handling:
     - NULL values: Gracefully converted to empty strings
     - Invalid values: Replaced with 'no data', logged with samples
 
-Version: 1.0.0
+Version: 1.1.0
 Compatibility: Python 3.14.4+, Polars 1.36.1
 Maintainer: PLD Engineering Center
 Created: 2026-03-18
-Last Modified: 2026-08-13
+Last Modified: 2026-11-25
 License: MIT
 Status: Production
 """
@@ -120,75 +140,29 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # Local imports
 from config import get_logger
-from database.database import (
-    LOCALIZATION_ENUM,
-    PACKAGING_TYPE_ENUM,
-    BOM_PRODUCT_ENUM,
-    MODEL_NAMES_ENUM,
-    WORKSHOP_CODES_ENUM,
-    WORKSHOP_NAMES_ENUM,
-    CONFIGURATION_ENUM,
-    BREAKPOINT_STATUS_ENUM
-)
+from config.columns_config import ENUM_COLUMN_MAPPING
+import database.database as db_models
 
 # Logger setup
 logger = get_logger(__name__)
 
 
-# Dictionary mapping column names to ENUM objects
-# This allows direct lookup by column name as used in DAGs
-_COLUMN_TO_ENUM = {
-    # LOCALIZATION_ENUM mappings
-    'LOCALIZATION': LOCALIZATION_ENUM,
-    'localization': LOCALIZATION_ENUM,
-    'localization_before': LOCALIZATION_ENUM,
-    'LOCALIZATION_BEFORE': LOCALIZATION_ENUM,
-    'localization_after': LOCALIZATION_ENUM,
-    'LOCALIZATION_AFTER': LOCALIZATION_ENUM,
-
-    # PACKAGING_TYPE_ENUM mappings
-    'BOX_TYPE': PACKAGING_TYPE_ENUM,
-    'box_type': PACKAGING_TYPE_ENUM,
-    'PALLET_TYPE': PACKAGING_TYPE_ENUM,
-    'pallet_type': PACKAGING_TYPE_ENUM,
-    'box_before': PACKAGING_TYPE_ENUM,
-    'BOX_BEFORE': PACKAGING_TYPE_ENUM,
-    'box_after': PACKAGING_TYPE_ENUM,
-    'BOX_AFTER': PACKAGING_TYPE_ENUM,
-    'pallet_before': PACKAGING_TYPE_ENUM,
-    'PALLET_BEFORE': PACKAGING_TYPE_ENUM,
-    'pallet_after': PACKAGING_TYPE_ENUM,
-    'PALLET_AFTER': PACKAGING_TYPE_ENUM,
-
-    # BOM_PRODUCT_ENUM mappings
-    'bom_product': BOM_PRODUCT_ENUM,
-    'BOM_PRODUCT': BOM_PRODUCT_ENUM,
-
-    # MODEL_NAMES_ENUM mappings
-    'MODEL_NAME': MODEL_NAMES_ENUM,
-    'model_name': MODEL_NAMES_ENUM,
-
-    # WORKSHOP_CODES_ENUM mappings
-    'WORKSHOP_CODE': WORKSHOP_CODES_ENUM,
-    'workshop_code': WORKSHOP_CODES_ENUM,
-    'workshop_before': WORKSHOP_CODES_ENUM,
-    'WORKSHOP_BEFORE': WORKSHOP_CODES_ENUM,
-    'workshop_after': WORKSHOP_CODES_ENUM,
-    'WORKSHOP_AFTER': WORKSHOP_CODES_ENUM,
-
-    # WORKSHOP_NAMES_ENUM mappings
-    'WORKSHOP_NAME': WORKSHOP_NAMES_ENUM,
-    'workshop_name': WORKSHOP_NAMES_ENUM,
-
-    # CONFIGURATION_ENUM mappings
-    'CONFIGURATION': CONFIGURATION_ENUM,
-    'configuration': CONFIGURATION_ENUM,
-
-    # BREAKPOINT_STATUS_ENUM mappings
-    'breakpoint_status': BREAKPOINT_STATUS_ENUM,
-    'STATUS': BREAKPOINT_STATUS_ENUM,
-    'status': BREAKPOINT_STATUS_ENUM,
-}
+# Column-to-ENUM mapping, built from columns_config.ENUM_COLUMN_MAPPING
+# (single source of truth). Keys are registered in both original and
+# lowercase form, because transform tasks run after columns_to_lowercase().
+_COLUMN_TO_ENUM: dict = {}
+for _col_name, _enum_name in ENUM_COLUMN_MAPPING.items():
+    try:
+        _enum_obj = getattr(db_models, _enum_name)
+    except AttributeError:
+        logger.error(
+            "ENUM '%s' mapped for column '%s' not found in database.py; "
+            "fix ENUM_COLUMN_MAPPING in columns_config.py",
+            _enum_name, _col_name
+        )
+        continue
+    _COLUMN_TO_ENUM[_col_name] = _enum_obj
+    _COLUMN_TO_ENUM[_col_name.lower()] = _enum_obj
 
 
 def _get_enum_values(enum_obj) -> List[str]:
@@ -328,4 +302,28 @@ def enum_validate(df: pl.DataFrame, column_name: str) -> pl.DataFrame:
     # Remove temporary column
     df = df.drop(temp_col)
 
+    return df
+
+
+def enum_validate_all(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Validate all ENUM-backed columns present in the DataFrame.
+
+    Iterates over the mapping from columns_config.ENUM_COLUMN_MAPPING and
+    applies enum_validate() to every mapped column found in the DataFrame.
+    Designed as a single call in DAG transform tasks, after text cleaning.
+
+    Args:
+        df: Polars DataFrame (column names already lowercased)
+
+    Returns:
+        DataFrame with all ENUM columns validated
+    """
+    validated = 0
+    for col in df.columns:
+        if col in _COLUMN_TO_ENUM:
+            df = enum_validate(df, col)
+            validated += 1
+
+    logger.debug("ENUM validation applied to %d column(s)", validated)
     return df
