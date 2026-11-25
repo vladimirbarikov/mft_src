@@ -2789,6 +2789,7 @@ class DepartmentData(Base):
     users = relationship(
         'UserData',
         back_populates='department',
+        foreign_keys='UserData.department_id',
         lazy='selectin'
     )
     created_by = relationship(
@@ -2900,6 +2901,7 @@ class UserRoleData(Base):
     users = relationship(
         'UserData',
         back_populates='role',
+        foreign_keys='UserData.role_id',
         lazy='selectin'
     )
     created_by = relationship(
@@ -3040,11 +3042,13 @@ class UserData(Base):
     role = relationship(
         'UserRoleData',
         back_populates='users',
+        foreign_keys='UserData.role_id',
         lazy='joined'
     )
     department = relationship(
         'DepartmentData',
         back_populates='users',
+        foreign_keys='UserData.department_id',
         lazy='joined'
     )
     created_plans = relationship(
