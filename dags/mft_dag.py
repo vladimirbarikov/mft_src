@@ -19,8 +19,11 @@ Pipeline Architecture:
     4. LOAD: Bulk loads data into PostgreSQL with constraint management
 
 Data Entities Processed:
-    - Core Entities: Suppliers, Parts, Boxes, Pallets, Models, Workshops, Lines
+    - Core Entities: Suppliers, Parts, Boxes, Pallets, Models, Configurations,
+      Transmissions, Colors, Workshops, Lines
     - Junction Tables: Many-to-many relationships between entities
+      (part_to_box, box_to_pallet, part_to_model, part_to_line,
+      part_to_color, configuration_to_transmission)
     - Dimensional Data: Box and pallet dimensions with composite keys
 
 Key Features:
@@ -71,11 +74,11 @@ Integration with Upload API:
     - file_size: Size in bytes
     - sheets: List of sheets in file
 
-Version: 2.0.0
+Version: 2.1.0
 Compatibility: Python 3.14.4+, Apache Airflow 3.0.6+
 Maintainer: PLD Engineering Center
 Created: 2025-01-19
-Last Modified: 2026-07-27
+Last Modified: 2026-11-24
 Status: Production Ready
 License: MIT
 """
@@ -170,7 +173,7 @@ def mft_etl_pipeline():
         Task extracts raw main data from Excel content provided by upload API.
 
         Receives base64-encoded file content from upload_api via DAG run conf,
-        decoes it to bytes, and creates the main Polars DataFrame.
+        decodes it to bytes, and creates the main Polars DataFrame.
         All processing is done in memory - no disk I/O.
         """
         # The import has been moved to a function in order to:
@@ -639,6 +642,102 @@ def mft_etl_pipeline():
         return serialized_raw_line_df_b64
 
 
+    @task(task_id="extract_color_data")
+    def extract_color_data(
+        serialized_main_df_b64: str
+    ) -> str:
+        """Task extracts raw color-specific data"""
+        # The import has been moved to a function in order to:
+        #  - Speed up DAG loading (from 30+ seconds to < 2 seconds)
+        #  - Reduce the load on the Scheduler
+        #  - Reduce memory consumption
+        from config.columns_config import COLOR_COLS  # pylint: disable=import-outside-toplevel
+        from dags.tasks.serializer import serialize_df, deserialize_df  # pylint: disable=import-outside-toplevel
+        from dags.tasks.extractor import create_specialized_df  # pylint: disable=import-outside-toplevel
+
+        logger.info(
+            "Extracting color data..."
+        )
+
+        # Decoding base64 → bytes
+        serialized_main_df = base64.b64decode(serialized_main_df_b64)
+
+        # Deserialize the DataFrame from bytes
+        main_df = deserialize_df(serialized_main_df)
+
+        raw_color_df = create_specialized_df(main_df, COLOR_COLS)
+
+        logger.info(
+            "Successfully extracted color data.\n"
+            "Shape: %d rows, %d columns.\n"
+            "Columns: %s.",
+            raw_color_df.height,
+            raw_color_df.width,
+            ', '.join(raw_color_df.columns),
+        )
+
+        # Serializing the DataFrame to bytes
+        serialized_raw_color_df = serialize_df(raw_color_df)
+        logger.debug(
+            "Serialized color data to %d bytes.",
+            len(serialized_raw_color_df)
+        )
+
+        # Converting bytes → base64 string for XCom
+        serialized_raw_color_df_b64 = base64.b64encode(serialized_raw_color_df).decode('utf-8')
+        logger.debug("Encoded to base64: %d chars", len(serialized_raw_color_df_b64))
+
+        return serialized_raw_color_df_b64
+
+
+    @task(task_id="extract_transmission_data")
+    def extract_transmission_data(
+        serialized_main_df_b64: str
+    ) -> str:
+        """Task extracts raw transmission-specific data"""
+        # The import has been moved to a function in order to:
+        #  - Speed up DAG loading (from 30+ seconds to < 2 seconds)
+        #  - Reduce the load on the Scheduler
+        #  - Reduce memory consumption
+        from config.columns_config import TRANSMISSION_COLS  # pylint: disable=import-outside-toplevel
+        from dags.tasks.serializer import serialize_df, deserialize_df  # pylint: disable=import-outside-toplevel
+        from dags.tasks.extractor import create_specialized_df  # pylint: disable=import-outside-toplevel
+
+        logger.info(
+            "Extracting transmission data..."
+        )
+
+        # Decoding base64 → bytes
+        serialized_main_df = base64.b64decode(serialized_main_df_b64)
+
+        # Deserialize the DataFrame from bytes
+        main_df = deserialize_df(serialized_main_df)
+
+        raw_transmission_df = create_specialized_df(main_df, TRANSMISSION_COLS)
+
+        logger.info(
+            "Successfully extracted transmission data.\n"
+            "Shape: %d rows, %d columns.\n"
+            "Columns: %s.",
+            raw_transmission_df.height,
+            raw_transmission_df.width,
+            ', '.join(raw_transmission_df.columns),
+        )
+
+        # Serializing the DataFrame to bytes
+        serialized_raw_transmission_df = serialize_df(raw_transmission_df)
+        logger.debug(
+            "Serialized transmission data to %d bytes.",
+            len(serialized_raw_transmission_df)
+        )
+
+        # Converting bytes → base64 string for XCom
+        serialized_raw_transmission_df_b64 = base64.b64encode(serialized_raw_transmission_df).decode('utf-8')
+        logger.debug("Encoded to base64: %d chars", len(serialized_raw_transmission_df_b64))
+
+        return serialized_raw_transmission_df_b64
+
+
     # Extract data for junction tables
     @task(task_id="extract_part_to_box")
     def extract_part_to_box(serialized_main_df_b64: str) -> str:
@@ -734,6 +833,54 @@ def mft_etl_pipeline():
         serialized_part_to_line_df_b64 = base64.b64encode(serialize_df(df)).decode('utf-8')
         logger.debug("Part-to-Line serialized to %d chars", len(serialized_part_to_line_df_b64))
         return serialized_part_to_line_df_b64
+
+
+    @task(task_id="extract_part_to_color")
+    def extract_part_to_color(serialized_main_df_b64: str) -> str:
+        """Extract Part-to-Color junction data"""
+        # The import has been moved to a function in order to:
+        #  - Speed up DAG loading (from 30+ seconds to < 2 seconds)
+        #  - Reduce the load on the Scheduler
+        #  - Reduce memory consumption
+        from config.columns_config import PART_TO_COLOR_COLS  # pylint: disable=import-outside-toplevel
+        from dags.tasks.serializer import serialize_df, deserialize_df  # pylint: disable=import-outside-toplevel
+
+        logger.info("Extracting Part-to-Color junction data...")
+
+        serialized_main_df = base64.b64decode(serialized_main_df_b64)
+        main_df = deserialize_df(serialized_main_df)
+
+        # Extract Part-to-Color columns
+        df = main_df.select(PART_TO_COLOR_COLS)
+
+        # Serialize to base64
+        serialized_part_to_color_df_b64 = base64.b64encode(serialize_df(df)).decode('utf-8')
+        logger.debug("Part-to-Color serialized to %d chars", len(serialized_part_to_color_df_b64))
+        return serialized_part_to_color_df_b64
+
+
+    @task(task_id="extract_configuration_to_transmission")
+    def extract_configuration_to_transmission(serialized_main_df_b64: str) -> str:
+        """Extract Configuration-to-Transmission junction data"""
+        # The import has been moved to a function in order to:
+        #  - Speed up DAG loading (from 30+ seconds to < 2 seconds)
+        #  - Reduce the load on the Scheduler
+        #  - Reduce memory consumption
+        from config.columns_config import CONFIGURATION_TO_TRANSMISSION_COLS  # pylint: disable=import-outside-toplevel
+        from dags.tasks.serializer import serialize_df, deserialize_df  # pylint: disable=import-outside-toplevel
+
+        logger.info("Extracting Configuration-to-Transmission junction data...")
+
+        serialized_main_df = base64.b64decode(serialized_main_df_b64)
+        main_df = deserialize_df(serialized_main_df)
+
+        # Extract Configuration-to-Transmission columns
+        df = main_df.select(CONFIGURATION_TO_TRANSMISSION_COLS)
+
+        # Serialize to base64
+        serialized_configuration_to_transmission_df_b64 = base64.b64encode(serialize_df(df)).decode('utf-8')
+        logger.debug("Configuration-to-Transmission serialized to %d chars", len(serialized_configuration_to_transmission_df_b64))
+        return serialized_configuration_to_transmission_df_b64
 
 
     # ========== TRANSFORM PHASE ==========
@@ -1090,6 +1237,9 @@ def mft_etl_pipeline():
             model_df = convert_to_string(model_df, col)
             model_df = basic_clean_text(model_df, col)
 
+        # Drop placeholder rows until real model codes are provided
+        model_df = model_df.filter(pl.col('MODEL_CODE') != 'no data')
+
         # Removing duplicates across all MODEL_COLS
         transformed_model_df = model_df.unique(subset=MODEL_COLS, keep='first')
 
@@ -1123,7 +1273,7 @@ def mft_etl_pipeline():
     def transform_configuration_data(
         serialized_raw_configuration_df_b64: str
     ) -> str:
-        """Transform model data with text cleaning, type conversion and removing duplicates."""
+        """Transform configuration data with text cleaning, type conversion and removing duplicates."""
         # The import has been moved to a function in order to:
         #  - Speed up DAG loading (from 30+ seconds to < 2 seconds)
         #  - Reduce the load on the Scheduler
@@ -1138,7 +1288,7 @@ def mft_etl_pipeline():
         )
 
         logger.info(
-            "Transforming model data..."
+            "Transforming configuration data..."
         )
 
         # Decoding base64 → bytes
@@ -1158,7 +1308,10 @@ def mft_etl_pipeline():
         configuration_df = basic_clean_text(configuration_df, 'CONFIGURATION')
         configuration_df = basic_clean_text(configuration_df, 'TRANSMISSION')
 
-        # Removing duplicates across all MODEL_COLS
+        # Drop placeholder rows until real configurations are provided
+        configuration_df = configuration_df.filter(pl.col('CONFIGURATION') != 'no data')
+
+        # Removing duplicates across all CONFIGURATION_COLS
         transformed_configuration_df = configuration_df.unique(
             subset=CONFIGURATION_COLS, keep='first'
         )
@@ -1178,7 +1331,7 @@ def mft_etl_pipeline():
         # Serializing the DataFrame to bytes
         serialized_transformed_configuration_df = serialize_df(transformed_configuration_df)
         logger.debug(
-            "Serialized model data to %d bytes.",
+            "Serialized configuration data to %d bytes.",
             len(serialized_transformed_configuration_df)
         )
 
@@ -1317,6 +1470,143 @@ def mft_etl_pipeline():
         logger.debug("Encoded to base64: %d chars", len(serialized_transformed_line_df_b64))
 
         return serialized_transformed_line_df_b64
+
+
+    @task(task_id="transform_color_data")
+    def transform_color_data(
+        serialized_raw_color_df_b64: str
+    ) -> str:
+        """Transform color data with text cleaning and removing duplicates."""
+        # The import has been moved to a function in order to:
+        #  - Speed up DAG loading (from 30+ seconds to < 2 seconds)
+        #  - Reduce the load on the Scheduler
+        #  - Reduce memory consumption
+        import polars as pl  # pylint: disable=import-outside-toplevel
+        from config.columns_config import COLOR_COLS  # pylint: disable=import-outside-toplevel
+        from dags.tasks.serializer import serialize_df, deserialize_df  # pylint: disable=import-outside-toplevel
+        from dags.tasks.transformer import (  # pylint: disable=import-outside-toplevel
+            columns_to_lowercase,
+            convert_to_string,
+            basic_clean_text
+        )
+
+        logger.info(
+            "Transforming color data..."
+        )
+
+        # Decoding base64 → bytes
+        serialized_raw_color_df = base64.b64decode(serialized_raw_color_df_b64)
+
+        # Deserialize the DataFrame from bytes
+        color_df = deserialize_df(serialized_raw_color_df)
+
+        # Drop rows where all values are missing/NaN
+        color_df = color_df.filter(pl.any_horizontal(pl.all().is_not_null()))
+
+        # Apply converting and cleaning text (basic_clean_text lowercases values)
+        for col in COLOR_COLS:
+            color_df = convert_to_string(color_df, col)
+            color_df = basic_clean_text(color_df, col)
+
+        # Drop placeholder rows until real colors are provided
+        color_df = color_df.filter(pl.col('COLOR_CODE') != 'no data')
+
+        # Removing duplicates across all COLOR_COLS
+        transformed_color_df = color_df.unique(subset=COLOR_COLS, keep='first')
+
+        # Convert all column names to lowercase
+        transformed_color_df = columns_to_lowercase(transformed_color_df)
+
+        logger.info(
+            "Successfully transformed color data.\n"
+            "Shape: %d rows, %d columns.\n"
+            "Columns: %s.",
+            transformed_color_df.height,
+            transformed_color_df.width,
+            ', '.join(transformed_color_df.columns),
+        )
+
+        # Serializing the DataFrame to bytes
+        serialized_transformed_color_df = serialize_df(transformed_color_df)
+        logger.debug(
+            "Serialized transformed color data to %d bytes.",
+            len(serialized_transformed_color_df)
+        )
+
+        # Converting bytes → base64 string for XCom
+        serialized_transformed_color_df_b64 = base64.b64encode(serialized_transformed_color_df).decode('utf-8')
+        logger.debug("Encoded to base64: %d chars", len(serialized_transformed_color_df_b64))
+
+        return serialized_transformed_color_df_b64
+
+
+    @task(task_id="transform_transmission_data")
+    def transform_transmission_data(
+        serialized_raw_transmission_df_b64: str
+    ) -> str:
+        """Transform transmission data with text cleaning and removing duplicates."""
+        # The import has been moved to a function in order to:
+        #  - Speed up DAG loading (from 30+ seconds to < 2 seconds)
+        #  - Reduce the load on the Scheduler
+        #  - Reduce memory consumption
+        import polars as pl  # pylint: disable=import-outside-toplevel
+        from config.columns_config import TRANSMISSION_COLS  # pylint: disable=import-outside-toplevel
+        from dags.tasks.serializer import serialize_df, deserialize_df  # pylint: disable=import-outside-toplevel
+        from dags.tasks.transformer import (  # pylint: disable=import-outside-toplevel
+            columns_to_lowercase,
+            convert_to_string,
+            basic_clean_text
+        )
+
+        logger.info(
+            "Transforming transmission data..."
+        )
+
+        # Decoding base64 → bytes
+        serialized_raw_transmission_df = base64.b64decode(serialized_raw_transmission_df_b64)
+
+        # Deserialize the DataFrame from bytes
+        transmission_df = deserialize_df(serialized_raw_transmission_df)
+
+        # Drop rows where all values are missing/NaN
+        transmission_df = transmission_df.filter(pl.any_horizontal(pl.all().is_not_null()))
+
+        # Apply converting and cleaning text
+        transmission_df = convert_to_string(transmission_df, 'TRANSMISSION')
+        transmission_df = basic_clean_text(transmission_df, 'TRANSMISSION')
+
+        # Drop placeholder rows until real transmissions are provided
+        transmission_df = transmission_df.filter(pl.col('TRANSMISSION') != 'no data')
+
+        # Removing duplicates across all TRANSMISSION_COLS
+        transformed_transmission_df = transmission_df.unique(
+            subset=TRANSMISSION_COLS, keep='first'
+        )
+
+        # Convert all column names to lowercase
+        transformed_transmission_df = columns_to_lowercase(transformed_transmission_df)
+
+        logger.info(
+            "Successfully transformed transmission data.\n"
+            "Shape: %d rows, %d columns.\n"
+            "Columns: %s.",
+            transformed_transmission_df.height,
+            transformed_transmission_df.width,
+            ', '.join(transformed_transmission_df.columns),
+        )
+
+        # Serializing the DataFrame to bytes
+        serialized_transformed_transmission_df = serialize_df(transformed_transmission_df)
+        logger.debug(
+            "Serialized transformed transmission data to %d bytes.",
+            len(serialized_transformed_transmission_df)
+        )
+
+        # Converting bytes → base64 string for XCom
+        serialized_transformed_transmission_df_b64 = base64.b64encode(serialized_transformed_transmission_df).decode('utf-8')
+        logger.debug("Encoded to base64: %d chars", len(serialized_transformed_transmission_df_b64))
+
+        return serialized_transformed_transmission_df_b64
 
 
     # Transform data for junction tables
@@ -1500,6 +1790,94 @@ def mft_etl_pipeline():
         return serialized_transformed_part_to_line_df_b64
 
 
+    @task(task_id="transform_part_to_color")
+    def transform_part_to_color(part_to_color_b64: str) -> str:
+        """Transform Part-to-Color junction table data."""
+        # The import has been moved to a function in order to:
+        #  - Speed up DAG loading (from 30+ seconds to < 2 seconds)
+        #  - Reduce the load on the Scheduler
+        #  - Reduce memory consumption
+        import polars as pl  # pylint: disable=import-outside-toplevel
+        from config.columns_config import PART_TO_COLOR_COLS  # pylint: disable=import-outside-toplevel
+        from dags.tasks.serializer import serialize_df, deserialize_df  # pylint: disable=import-outside-toplevel
+        from dags.tasks.transformer import (  # pylint: disable=import-outside-toplevel
+            columns_to_lowercase,
+            convert_to_string,
+            basic_clean_text
+        )
+
+        logger.info("Transforming Part-to-Color junction data...")
+
+        # Decoding the DataFrame
+        df = deserialize_df(base64.b64decode(part_to_color_b64))
+
+        # Transform
+        if df is not None and not df.is_empty():
+            # Drop rows where all values are missing/NaN
+            df = df.filter(pl.any_horizontal(pl.all().is_not_null()))
+
+            # Apply converting and cleaning text
+            for col in PART_TO_COLOR_COLS:
+                df = convert_to_string(df, col)
+                df = basic_clean_text(df, col)
+
+            # Remove duplicates
+            df = df.unique(subset=PART_TO_COLOR_COLS, keep='first')
+            df = columns_to_lowercase(df)
+        else:
+            logger.warning("Part-to-Color junction table is empty")
+            df = pl.DataFrame()
+
+        # Serialize back to base64
+        serialized_transformed_part_to_color_df_b64 = base64.b64encode(serialize_df(df)).decode('utf-8')
+        logger.debug("Transformed Part-to-Color serialized to %d chars", len(serialized_transformed_part_to_color_df_b64))
+        return serialized_transformed_part_to_color_df_b64
+
+
+    @task(task_id="transform_configuration_to_transmission")
+    def transform_configuration_to_transmission(configuration_to_transmission_b64: str) -> str:
+        """Transform Configuration-to-Transmission junction table data."""
+        # The import has been moved to a function in order to:
+        #  - Speed up DAG loading (from 30+ seconds to < 2 seconds)
+        #  - Reduce the load on the Scheduler
+        #  - Reduce memory consumption
+        import polars as pl  # pylint: disable=import-outside-toplevel
+        from config.columns_config import CONFIGURATION_TO_TRANSMISSION_COLS  # pylint: disable=import-outside-toplevel
+        from dags.tasks.serializer import serialize_df, deserialize_df  # pylint: disable=import-outside-toplevel
+        from dags.tasks.transformer import (  # pylint: disable=import-outside-toplevel
+            columns_to_lowercase,
+            convert_to_string,
+            basic_clean_text
+        )
+
+        logger.info("Transforming Configuration-to-Transmission junction data...")
+
+        # Decoding the DataFrame
+        df = deserialize_df(base64.b64decode(configuration_to_transmission_b64))
+
+        # Transform
+        if df is not None and not df.is_empty():
+            # Drop rows where all values are missing/NaN
+            df = df.filter(pl.any_horizontal(pl.all().is_not_null()))
+
+            # Apply converting and cleaning text
+            for col in CONFIGURATION_TO_TRANSMISSION_COLS:
+                df = convert_to_string(df, col)
+                df = basic_clean_text(df, col)
+
+            # Remove duplicates
+            df = df.unique(subset=CONFIGURATION_TO_TRANSMISSION_COLS, keep='first')
+            df = columns_to_lowercase(df)
+        else:
+            logger.warning("Configuration-to-Transmission junction table is empty")
+            df = pl.DataFrame()
+
+        # Serialize back to base64
+        serialized_transformed_configuration_to_transmission_df_b64 = base64.b64encode(serialize_df(df)).decode('utf-8')
+        logger.debug("Transformed Configuration-to-Transmission serialized to %d chars", len(serialized_transformed_configuration_to_transmission_df_b64))
+        return serialized_transformed_configuration_to_transmission_df_b64
+
+
     # ========== LOADING PHASE ==========
     # Separate tasks of loading core entity and junction tables in correct sequence
     @task(task_id="load_core_entity_tables")
@@ -1511,7 +1889,9 @@ def mft_etl_pipeline():
         serialized_transformed_box_df_b64: str,
         serialized_transformed_pallet_df_b64: str,
         serialized_transformed_line_df_b64: str,
-        serialized_transformed_part_df_b64: str
+        serialized_transformed_part_df_b64: str,
+        serialized_transformed_transmission_df_b64: str,
+        serialized_transformed_color_df_b64: str
     ) -> dict[str, int]:
         """
         Task loads ALL core entity tables in the correct dependency sequence.
@@ -1525,6 +1905,8 @@ def mft_etl_pipeline():
         6. Configuration (independent)
         7. Workshops (independent)
         8. Lines (depending on Workshops) - but it will be postponed due to Foregn Key
+        9. Transmissions (independent)
+        10. Colors (independent)
         """
         # The import has been moved to a function in order to:
         #  - Speed up DAG loading (from 30+ seconds to < 2 seconds)
@@ -1546,7 +1928,9 @@ def mft_etl_pipeline():
             'transformed_box_df': deserialize_df(base64.b64decode(serialized_transformed_box_df_b64)),
             'transformed_pallet_df': deserialize_df(base64.b64decode(serialized_transformed_pallet_df_b64)),
             'transformed_line_df': deserialize_df(base64.b64decode(serialized_transformed_line_df_b64)),
-            'transformed_part_df': deserialize_df(base64.b64decode(serialized_transformed_part_df_b64))
+            'transformed_part_df': deserialize_df(base64.b64decode(serialized_transformed_part_df_b64)),
+            'transformed_transmission_df': deserialize_df(base64.b64decode(serialized_transformed_transmission_df_b64)),
+            'transformed_color_df': deserialize_df(base64.b64decode(serialized_transformed_color_df_b64))
         }
 
         # Check that all dataframes are not empty
@@ -1585,7 +1969,9 @@ def mft_etl_pipeline():
             "- Boxes: %d\n"
             "- Pallets: %d\n"
             "- Lines: %d\n"
-            "- Parts: %d",
+            "- Parts: %d"
+            "- Transmissions: %d\n"
+            "- Colors: %d",
             total_records,
             results.get('supplier_data', 0),
             results.get('workshop_data', 0),
@@ -1594,7 +1980,9 @@ def mft_etl_pipeline():
             results.get('box_data', 0),
             results.get('pallet_data', 0),
             results.get('line_data', 0),
-            results.get('part_data', 0)
+            results.get('part_data', 0),
+            results.get('transmission_data', 0),
+            results.get('color_data', 0)
         )
 
         return results
@@ -1606,6 +1994,8 @@ def mft_etl_pipeline():
         transformed_box_to_pallet_b64: str,
         transformed_part_to_model_b64: str,
         transformed_part_to_line_b64: str,
+        transformed_part_to_color_b64: str,
+        transformed_configuration_to_transmission_b64: str,
         core_entities_results: dict[str, int]
     ) -> dict[str, int]:
         """Load junction tables after all core entities are loaded"""
@@ -1623,14 +2013,26 @@ def mft_etl_pipeline():
         box_to_pallet_df = deserialize_df(base64.b64decode(transformed_box_to_pallet_b64))
         part_to_model_df = deserialize_df(base64.b64decode(transformed_part_to_model_b64))
         part_to_line_df = deserialize_df(base64.b64decode(transformed_part_to_line_b64))
+        part_to_color_df = deserialize_df(base64.b64decode(transformed_part_to_color_b64))
+        configuration_to_transmission_df = deserialize_df(base64.b64decode(transformed_configuration_to_transmission_b64))
 
         # Check if all required core entities were loaded
         required_entities = {
             'part_data': 'Parts',
             'box_data': 'Boxes',
             'pallet_data': 'Pallets',
-            'model_data': 'Models',
             'line_data': 'Lines'
+        }
+
+        # Reference entities may legitimately be empty while the source
+        # data contains only 'no data' placeholders (see 'no data'
+        # filtering in transform tasks); affected junction rows are
+        # skipped gracefully by the mapper
+        reference_entities = {
+            'model_data': 'Models',
+            'configuration_data': 'Configurations',
+            'transmission_data': 'Transmissions',
+            'color_data': 'Colors'
         }
 
         missing_entities = []
@@ -1648,12 +2050,22 @@ def mft_etl_pipeline():
                 ', '.join(missing_entities)
             )
 
-        # Подготавливаем словарь для загрузки
+        for entity_key, entity_name in reference_entities.items():
+            if core_entities_results.get(entity_key, 0) == 0:
+                logger.info(
+                    "No %s data loaded (placeholder-only source data). "
+                    "Junction rows referencing %s will be skipped.",
+                    entity_name, entity_name
+                )
+
+        # Preparing the dictionary for loading
         junction_dict = {
             'part_to_box': part_to_box_df,
             'box_to_pallet': box_to_pallet_df,
             'part_to_model': part_to_model_df,
-            'part_to_line': part_to_line_df
+            'part_to_line': part_to_line_df,
+            'part_to_color': part_to_color_df,
+            'configuration_to_transmission': configuration_to_transmission_df
         }
 
         # Uploading data to the database
@@ -1673,11 +2085,15 @@ def mft_etl_pipeline():
                 "- BoxToPallet: %d\n"
                 "- PartToModel: %d\n"
                 "- PartToLine: %d\n"
+                "- PartToColor: %d\n"
+                "- ConfigurationToTransmission: %d\n"
                 "Total: %d records",
                 results.get('part_to_box', 0),
                 results.get('box_to_pallet', 0),
                 results.get('part_to_model', 0),
                 results.get('part_to_line', 0),
+                results.get('part_to_color', 0),
+                results.get('configuration_to_transmission', 0),
                 junction_total
             )
         else:
@@ -1797,10 +2213,14 @@ def mft_etl_pipeline():
     extract_configuration_task = extract_configuration_data(main_task)  # type: ignore
     extract_workshop_task = extract_workshop_data(main_task)  # type: ignore
     extract_line_task = extract_line_data(main_task)  # type: ignore
+    extract_color_task = extract_color_data(main_task)  # type: ignore
+    extract_transmission_task = extract_transmission_data(main_task)  # type: ignore
     extract_part_to_box_task = extract_part_to_box(main_task)  # type: ignore
     extract_box_to_pallet_task = extract_box_to_pallet(main_task)  # type: ignore
     extract_part_to_model_task = extract_part_to_model(main_task)  # type: ignore
     extract_part_to_line_task = extract_part_to_line(main_task)  # type: ignore
+    extract_part_to_color_task = extract_part_to_color(main_task)  # type: ignore
+    extract_configuration_to_transmission_task = extract_configuration_to_transmission(main_task)  # type: ignore
 
     # TRANSFORM PHASE
     # Each transform task depends on the corresponding extract task
@@ -1812,10 +2232,14 @@ def mft_etl_pipeline():
     transform_configuration_task = transform_configuration_data(extract_configuration_task)  # type: ignore
     transform_workshop_task = transform_workshop_data(extract_workshop_task)  # type: ignore
     transform_line_task = transform_line_data(extract_line_task)  # type: ignore
+    transform_color_task = transform_color_data(extract_color_task)  # type: ignore
+    transform_transmission_task = transform_transmission_data(extract_transmission_task)  # type: ignore
     transformed_part_to_box_task = transform_part_to_box(extract_part_to_box_task)  # type: ignore
     transformed_box_to_pallet_task = transform_box_to_pallet(extract_box_to_pallet_task)  # type: ignore
     transformed_part_to_model_task = transform_part_to_model(extract_part_to_model_task)  # type: ignore
     transformed_part_to_line_task = transform_part_to_line(extract_part_to_line_task)  # type: ignore
+    transformed_part_to_color_task = transform_part_to_color(extract_part_to_color_task)  # type: ignore
+    transformed_configuration_to_transmission_task = transform_configuration_to_transmission(extract_configuration_to_transmission_task)  # type: ignore
 
 
     # LOADING PHASE
@@ -1828,7 +2252,9 @@ def mft_etl_pipeline():
         serialized_transformed_box_df_b64 = transform_box_task,  # type: ignore
         serialized_transformed_pallet_df_b64 = transform_pallet_task,  # type: ignore
         serialized_transformed_line_df_b64 = transform_line_task,  # type: ignore
-        serialized_transformed_part_df_b64 = transform_part_task  # type: ignore
+        serialized_transformed_part_df_b64 = transform_part_task,  # type: ignore
+        serialized_transformed_transmission_df_b64 = transform_transmission_task,  # type: ignore
+        serialized_transformed_color_df_b64 = transform_color_task  # type: ignore
     )
 
     # Loading all the junction tables (depending on core entities)
@@ -1837,6 +2263,8 @@ def mft_etl_pipeline():
         transformed_box_to_pallet_b64 = transformed_box_to_pallet_task,  # type: ignore
         transformed_part_to_model_b64 = transformed_part_to_model_task,  # type: ignore
         transformed_part_to_line_b64 = transformed_part_to_line_task,  # type: ignore
+        transformed_part_to_color_b64 = transformed_part_to_color_task,  # type: ignore
+        transformed_configuration_to_transmission_b64 = transformed_configuration_to_transmission_task,  # type: ignore
         core_entities_results = load_core_entities_task  # type: ignore
     )
 
