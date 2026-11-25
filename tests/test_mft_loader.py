@@ -918,8 +918,8 @@ class TestLoadJunctionTables:
         })
 
     def test_empty_critical_table_aborts_loading(self, monkeypatch):
-        # color_data is empty -> loading must abort
-        connection = FakeConnection(scalar_counts={'FROM color_data': 0})
+        # part_data is a critical table: empty -> loading must abort
+        connection = FakeConnection(scalar_counts={'FROM part_data': 0})
         engine = make_engine(connection)
         monkeypatch.setattr(
             mft_loader, 'create_mft_mapper',
@@ -931,10 +931,10 @@ class TestLoadJunctionTables:
         )
         assert not results
 
-    def test_new_critical_tables_are_checked(self, monkeypatch):
-        # All old tables non-empty, transmission_data empty -> abort
+    def test_empty_reference_table_does_not_abort(self, monkeypatch):
+        # color_data is a reference table: empty -> warning only, no abort
         connection = FakeConnection(
-            scalar_counts={'FROM transmission_data': 0}
+            rowcount=1, scalar_counts={'FROM color_data': 0}
         )
         engine = make_engine(connection)
         monkeypatch.setattr(
@@ -945,7 +945,7 @@ class TestLoadJunctionTables:
             {'part_to_color': pl.DataFrame({'part_number': ['PN-001']})},
             engine
         )
-        assert not results
+        assert results['part_to_color'] == 1
 
     def test_successful_loading_of_new_junctions(self, monkeypatch):
         connection = FakeConnection(rowcount=1)
