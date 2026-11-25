@@ -1,22 +1,27 @@
 # Minimal image for MFT database initialization (mft_db only).
 # Runs once on stack startup: creates the MFT database and its tables.
 # Deliberately independent from the Airflow image:
-#   - own Python (3.14) and dependencies,
+#   #   - own Python (3.12) and dependencies,
 #   - no AIRFLOW__* env, no Airflow code.
 #
 # Used by the `db_initializer` service in docker-compose.yml.
 
-FROM python:3.14-slim
+FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    PIP_DEFAULT_TIMEOUT=100 \
+    PIP_RETRIES=10
 
 WORKDIR /app
 
 # psycopg2-binary ships prebuilt wheels, but libpq is needed at runtime.
 # gcc is intentionally NOT installed: psycopg2-binary is a wheel.
-RUN apt-get update \
+RUN sed -i 's/deb.debian.org/mirror.yandex.ru/g' /etc/apt/sources.list.d/debian.sources && \
+    sed -i 's/security.debian.org/mirror.yandex.ru\/debian-security/g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update \
     && apt-get install -y --no-install-recommends libpq5 \
     && rm -rf /var/lib/apt/lists/*
 

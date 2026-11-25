@@ -5,7 +5,9 @@ COPY ./dockerfiles/requirements_airflow.txt /tmp/requirements_airflow.txt
 
 # Install system dependencies (only what's needed)
 USER root
-RUN apt-get update && \
+RUN sed -i 's/deb.debian.org/mirror.yandex.ru/g' /etc/apt/sources.list.d/debian.sources && \
+    sed -i 's/security.debian.org/mirror.yandex.ru\/debian-security/g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
     gcc \
     python3-dev \
@@ -15,11 +17,15 @@ RUN apt-get update && \
 USER airflow
 
 # Install Python dependencies
+ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    PIP_DEFAULT_TIMEOUT=100 \
+    PIP_RETRIES=10
+COPY ./dockerfiles/constraints-3.12.txt /tmp/constraints-3.12.txt
 RUN pip install --upgrade pip setuptools wheel && \
     pip install --no-cache-dir \
     -r /tmp/requirements_airflow.txt \
     apache-airflow-providers-fab \
-    --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-3.0.6/constraints-3.12.txt"
+    --constraint "/tmp/constraints-3.12.txt"
 
 # Copy project files
 COPY --chown=airflow:root ./dags /opt/airflow/dags
