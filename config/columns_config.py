@@ -212,6 +212,17 @@ CHANGE CLASSIFICATION CONSTANTS
 
     FIELD_TO_DOMAIN: Maps field names to change domains (used by classifier)
 
+ENUM COLUMN MAPPING (single source of truth for enum_validator):
+
+    ENUM_COLUMN_MAPPING: Maps ENUM-backed Excel column names (UPPERCASE)
+        to ENUM object names in database.py, stored as strings so this
+        module stays import-free (avoids circular import with database).
+        enum_validator resolves the names via getattr() and registers
+        both UPPERCASE and lowercase keys, covering column names before
+        and after columns_to_lowercase().
+        When a new ENUM-backed column is added to a pipeline, ONLY this
+        dictionary needs to be updated.
+
 DATABASE MODEL MAPPING (MFT PIPELINE):
 
     Core Entity Tables:
@@ -280,11 +291,11 @@ ARCHITECTURE NOTES:
           INTERCHANGEABLE is a String (not Boolean) to allow new statuses
           without schema migration
 
-Version: 2.0.0
+Version: 2.1.0
 Compatibility: Python 3.14.4
 Maintainer: PLD Engineering Center
 Created: 2026-02-16
-Last Modified: 2026-11-23
+Last Modified: 2026-11-25
 License: MIT
 Status: Production
 """
@@ -915,4 +926,30 @@ FIELD_TO_DOMAIN: dict[str, str] = {
     # Color
     'color_code': CHANGE_DOMAINS['COLOR'],
     'color_name': CHANGE_DOMAINS['COLOR'],
+}
+
+# ============================================================================
+# ENUM COLUMN MAPPING (single source of truth for enum_validator)
+# ============================================================================
+# Maps ENUM-backed Excel column names (UPPERCASE) to ENUM object names
+# in database.py (as strings, to keep this module import-free).
+# enum_validator resolves names via getattr() and lowercases the keys,
+# so both 'LOCALIZATION' and 'localization' are covered.
+ENUM_COLUMN_MAPPING: dict[str, str] = {
+    # MFT pipeline
+    'LOCALIZATION': 'LOCALIZATION_ENUM',
+    'BOX_TYPE': 'PACKAGING_TYPE_ENUM',
+    'PALLET_TYPE': 'PACKAGING_TYPE_ENUM',
+    'BOM_PRODUCT_CODE': 'BOM_PRODUCT_CODE_ENUM',
+    'MODEL_NAME': 'MODEL_NAMES_ENUM',
+    'WORKSHOP_CODE': 'WORKSHOP_CODES_ENUM',
+    'WORKSHOP_NAME': 'WORKSHOP_NAMES_ENUM',
+    'CONFIGURATION': 'CONFIGURATION_ENUM',
+    # BP pipeline
+    'STATUS': 'BREAKPOINT_STATUS_ENUM',
+    'LOCALIZATION_AFTER': 'LOCALIZATION_ENUM',
+    'BOX_TYPE_AFTER': 'PACKAGING_TYPE_ENUM',
+    'PALLET_TYPE_AFTER': 'PACKAGING_TYPE_ENUM',
+    'WORKSHOP_CODE_AFTER': 'WORKSHOP_CODES_ENUM',
+    'WORKSHOP_NAME_AFTER': 'WORKSHOP_NAMES_ENUM',
 }
